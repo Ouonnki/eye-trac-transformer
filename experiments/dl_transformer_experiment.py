@@ -75,6 +75,9 @@ class LightweightGazeDataset(Dataset):
         if fit_normalizer:
             self._fit_normalizer()
 
+        # 预归一化所有数据（避免 __getitem__ 中重复计算）
+        self._prenormalize_all()
+
     def _fit_normalizer(self):
         """计算归一化统计量"""
         all_dt = []
@@ -100,13 +103,21 @@ class LightweightGazeDataset(Dataset):
             self.stats['acceleration_std'] = float(np.std(all_acceleration)) + 1e-8
 
     def _normalize(self, features: np.ndarray) -> np.ndarray:
-        """归一化特征"""
-        normalized = features.copy()
+        """归一化特征（原地修改，避免复制）"""
         if len(features) > 1:
-            normalized[1:, 2] = (features[1:, 2] - self.stats['dt_mean']) / self.stats['dt_std']
-            normalized[1:, 3] = (features[1:, 3] - self.stats['velocity_mean']) / self.stats['velocity_std']
-            normalized[1:, 4] = (features[1:, 4] - self.stats['acceleration_mean']) / self.stats['acceleration_std']
-        return normalized
+            features[1:, 2] = (features[1:, 2] - self.stats['dt_mean']) / self.stats['dt_std']
+            features[1:, 3] = (features[1:, 3] - self.stats['velocity_mean']) / self.stats['velocity_std']
+            features[1:, 4] = (features[1:, 4] - self.stats['acceleration_mean']) / self.stats['acceleration_std']
+        return features
+
+    def _prenormalize_all(self):
+        """预归一化所有数据，避免在 __getitem__ 中重复计算"""
+        for subject_data in self.data:
+            for task in subject_data['tasks']:
+                for i, features in enumerate(task['segments']):
+                    if len(features) > 1:
+                        # 原地归一化
+                        task['segments'][i] = self._normalize(features.copy())
 
     def __len__(self):
         return len(self.data)
@@ -131,18 +142,16 @@ class LightweightGazeDataset(Dataset):
         task_lengths = np.zeros(self.config.max_tasks, dtype=np.int64)
         task_mask = np.zeros(self.config.max_tasks, dtype=np.bool_)
 
-        # 填充数据
+        # 填充数据（数据已在 __init__ 中预归一化）
         for t_idx, task in enumerate(subject_data['tasks'][:self.config.max_tasks]):
             num_segments = min(len(task['segments']), self.config.max_segments)
             task_lengths[t_idx] = num_segments
             task_mask[t_idx] = True
 
             for s_idx, features in enumerate(task['segments'][:self.config.max_segments]):
-                # 归一化
-                normalized = self._normalize(features)
-                seq_len = min(len(normalized), self.config.max_seq_len)
+                seq_len = min(len(features), self.config.max_seq_len)
                 if seq_len > 0:
-                    segments[t_idx, s_idx, :seq_len, :] = normalized[:seq_len]
+                    segments[t_idx, s_idx, :seq_len, :] = features[:seq_len]
                     segment_lengths[t_idx, s_idx] = seq_len
                     segment_mask[t_idx, s_idx] = True
 
@@ -340,49 +349,112 @@ def main():
     # ============================================================
     # 训练配置
     # ============================================================
-    config = TrainingConfig(
-        # 模型参数
-        input_dim=7,
-        segment_d_model=128,
-        segment_nhead=8,
-        segment_num_layers=6,
-        task_d_model=256,
-        task_nhead=8,
-        task_num_layers=4,
-        attention_dim=64,
-        dropout=0.1,
-        max_seq_len=100,
-        max_tasks=30,
-        max_segments=30,
+    # 选择配置模式: 'full' (完整模型), 'medium' (中等), 'light' (轻量)
+    # 如果显存不足，从 full -> medium -> light 依次尝试
+    MODEL_MODE = os.environ.get('MODEL_MODE', 'medium')
 
-        # 训练参数
-        batch_size=16,
-        learning_rate=1e-4,
-        weight_decay=1e-4,
-        warmup_epochs=5,
-        epochs=100,
-        patience=15,
-        grad_clip=1.0,
-
-        # 加速配置
-        use_multi_gpu=False,
-        use_amp=True,
-        num_workers=4,  # 减少worker数量，因为数据已经预处理
-        pin_memory=True,
-
-        # 输出
-        output_dir=output_dir,
-        save_best=True,
-    )
+    if MODEL_MODE == 'full':
+        # 完整模型配置（需要较大显存，约24GB+）
+        config = TrainingConfig(
+            input_dim=7,
+            segment_d_model=128,
+            segment_nhead=8,
+            segment_num_layers=6,
+            task_d_model=256,
+            task_nhead=8,
+            task_num_layers=4,
+            attention_dim=64,
+            dropout=0.1,
+            max_seq_len=100,
+            max_tasks=30,
+            max_segments=30,
+            batch_size=16,
+            learning_rate=1e-4,
+            weight_decay=1e-4,
+            warmup_epochs=5,
+            epochs=100,
+            patience=15,
+            grad_clip=1.0,
+            use_multi_gpu=False,
+            use_amp=True,
+            use_gradient_checkpointing=True,  # 启用梯度检查点节省显存
+            num_workers=4,
+            pin_memory=True,
+            output_dir=output_dir,
+            save_best=True,
+        )
+    elif MODEL_MODE == 'medium':
+        # 中等配置（适合RTX 3090 24GB）
+        config = TrainingConfig(
+            input_dim=7,
+            segment_d_model=96,
+            segment_nhead=6,
+            segment_num_layers=4,
+            task_d_model=192,
+            task_nhead=6,
+            task_num_layers=3,
+            attention_dim=48,
+            dropout=0.1,
+            max_seq_len=80,
+            max_tasks=25,
+            max_segments=25,
+            batch_size=8,
+            learning_rate=8e-5,
+            weight_decay=1e-4,
+            warmup_epochs=4,
+            epochs=100,
+            patience=15,
+            grad_clip=1.0,
+            use_multi_gpu=False,
+            use_amp=True,
+            use_gradient_checkpointing=True,  # 启用梯度检查点节省显存
+            num_workers=4,
+            pin_memory=True,
+            output_dir=output_dir,
+            save_best=True,
+        )
+    else:  # 'light'
+        # 轻量配置（显存不足时的备选方案）
+        config = TrainingConfig(
+            input_dim=7,
+            segment_d_model=64,
+            segment_nhead=4,
+            segment_num_layers=2,
+            task_d_model=128,
+            task_nhead=4,
+            task_num_layers=2,
+            attention_dim=32,
+            dropout=0.1,
+            max_seq_len=50,
+            max_tasks=20,
+            max_segments=20,
+            batch_size=4,
+            learning_rate=5e-5,
+            weight_decay=1e-4,
+            warmup_epochs=3,
+            epochs=100,
+            patience=15,
+            grad_clip=1.0,
+            use_multi_gpu=False,
+            use_amp=True,
+            use_gradient_checkpointing=False,  # 轻量配置无需梯度检查点
+            num_workers=2,
+            pin_memory=True,
+            output_dir=output_dir,
+            save_best=True,
+        )
 
     # 打印配置
     print(f'\n{"="*50}')
-    print('Configuration:')
+    print(f'Configuration Mode: {MODEL_MODE}')
     print(f'{"="*50}')
     print(f'Processed Data: {processed_data_path}')
     print(f'Output Dir: {output_dir}')
     print(f'Batch Size: {config.batch_size}')
+    print(f'Max Tasks: {config.max_tasks}, Max Segments: {config.max_segments}')
+    print(f'Max Seq Len: {config.max_seq_len}')
     print(f'Model: segment_d={config.segment_d_model}, task_d={config.task_d_model}')
+    print(f'Layers: segment={config.segment_num_layers}, task={config.task_num_layers}')
 
     # GPU信息
     if torch.cuda.is_available():

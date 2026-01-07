@@ -9,6 +9,7 @@ from typing import Optional, Tuple, Dict
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from src.models.attention import AttentionPooling, PositionalEncoding
 
@@ -36,6 +37,7 @@ class GazeTransformerEncoder(nn.Module):
         dim_feedforward: int = 256,
         dropout: float = 0.1,
         max_seq_len: int = 100,
+        use_gradient_checkpointing: bool = False,
     ):
         """
         初始化
@@ -48,10 +50,12 @@ class GazeTransformerEncoder(nn.Module):
             dim_feedforward: 前馈网络维度
             dropout: Dropout比例
             max_seq_len: 最大序列长度
+            use_gradient_checkpointing: 是否使用梯度检查点节省显存
         """
         super().__init__()
 
         self.d_model = d_model
+        self.use_gradient_checkpointing = use_gradient_checkpointing
 
         # 输入投影
         self.input_proj = nn.Linear(input_dim, d_model)
@@ -62,16 +66,18 @@ class GazeTransformerEncoder(nn.Module):
         # [CLS] token
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
 
-        # Transformer编码器
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            activation='gelu',
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # Transformer编码器层（分开存储以支持梯度检查点）
+        self.encoder_layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                batch_first=True,
+                activation='gelu',
+            )
+            for _ in range(num_layers)
+        ])
 
         # LayerNorm
         self.norm = nn.LayerNorm(d_model)
@@ -114,8 +120,13 @@ class GazeTransformerEncoder(nn.Module):
         else:
             key_padding_mask = None
 
-        # Transformer编码
-        x = self.transformer(x, src_key_padding_mask=key_padding_mask)
+        # Transformer编码（支持梯度检查点）
+        for layer in self.encoder_layers:
+            if self.use_gradient_checkpointing and self.training:
+                # 使用梯度检查点节省显存
+                x = checkpoint(layer, x, None, key_padding_mask, use_reentrant=False)
+            else:
+                x = layer(x, src_key_padding_mask=key_padding_mask)
 
         # 取[CLS] token的输出
         output = self.norm(x[:, 0, :])  # (batch, d_model)
@@ -241,6 +252,7 @@ class HierarchicalTransformerNetwork(nn.Module):
         max_seq_len: int = 100,
         max_tasks: int = 30,
         max_segments: int = 30,
+        use_gradient_checkpointing: bool = False,
     ):
         """
         初始化
@@ -258,6 +270,7 @@ class HierarchicalTransformerNetwork(nn.Module):
             max_seq_len: 最大序列长度
             max_tasks: 最大任务数
             max_segments: 最大片段数
+            use_gradient_checkpointing: 是否使用梯度检查点节省显存
         """
         super().__init__()
 
@@ -273,6 +286,7 @@ class HierarchicalTransformerNetwork(nn.Module):
             dim_feedforward=segment_d_model * 4,
             dropout=dropout,
             max_seq_len=max_seq_len,
+            use_gradient_checkpointing=use_gradient_checkpointing,
         )
 
         # 任务聚合器（从片段到任务）
@@ -352,21 +366,19 @@ class HierarchicalTransformerNetwork(nn.Module):
         # 重塑为(batch, tasks, segments, d_model)
         segment_reprs = segment_reprs.view(batch_size, self.max_tasks, self.max_segments, -1)
 
-        # 2. 聚合片段到任务
-        # 对每个任务分别聚合片段
-        task_reprs_list = []
-        segment_attns_list = []
+        # 2. 向量化聚合片段到任务
+        # 将(batch, tasks, segments, d_model)重塑为(batch*tasks, segments, d_model)
+        segment_reprs_flat = segment_reprs.view(batch_size * self.max_tasks, self.max_segments, -1)
+        segment_mask_flat = segment_mask.view(batch_size * self.max_tasks, self.max_segments)
 
-        for t in range(self.max_tasks):
-            task_segment_reprs = segment_reprs[:, t, :, :]  # (batch, segments, d_model)
-            task_segment_mask = segment_mask[:, t, :]  # (batch, segments)
+        # 批量调用 task_aggregator
+        task_reprs_flat, segment_attns_flat = self.task_aggregator(segment_reprs_flat, segment_mask_flat)
+        # task_reprs_flat: (batch*tasks, d_model)
+        # segment_attns_flat: (batch*tasks, segments)
 
-            task_repr, seg_attn = self.task_aggregator(task_segment_reprs, task_segment_mask)
-            task_reprs_list.append(task_repr)
-            segment_attns_list.append(seg_attn)
-
-        task_reprs = torch.stack(task_reprs_list, dim=1)  # (batch, tasks, d_model)
-        segment_attentions = torch.stack(segment_attns_list, dim=1)  # (batch, tasks, segments)
+        # 重塑回(batch, tasks, d_model)和(batch, tasks, segments)
+        task_reprs = task_reprs_flat.view(batch_size, self.max_tasks, -1)
+        segment_attentions = segment_attns_flat.view(batch_size, self.max_tasks, self.max_segments)
 
         # 3. 编码任务序列
         task_encoded = self.task_encoder(task_reprs, task_mask)  # (batch, tasks, task_d_model)

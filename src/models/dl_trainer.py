@@ -56,6 +56,7 @@ class TrainingConfig:
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     use_multi_gpu: bool = True  # 多GPU并行
     use_amp: bool = True  # 混合精度训练
+    use_gradient_checkpointing: bool = False  # 梯度检查点节省显存
     num_workers: int = 8  # 数据加载进程数
     pin_memory: bool = True  # 锁页内存加速
 
@@ -188,7 +189,7 @@ class DeepLearningTrainer:
         }
 
     def _create_model(self) -> nn.Module:
-        """创建模型（支持多GPU）"""
+        """创建模型（支持多GPU和梯度检查点）"""
         model = HierarchicalTransformerNetwork(
             input_dim=self.config.input_dim,
             segment_d_model=self.config.segment_d_model,
@@ -202,8 +203,12 @@ class DeepLearningTrainer:
             max_seq_len=self.config.max_seq_len,
             max_tasks=self.config.max_tasks,
             max_segments=self.config.max_segments,
+            use_gradient_checkpointing=self.config.use_gradient_checkpointing,
         )
         model = model.to(self.device)
+
+        if self.config.use_gradient_checkpointing:
+            logger.info('Using Gradient Checkpointing to save memory')
 
         # 多GPU并行
         if self.n_gpus > 1 and self.config.use_multi_gpu:

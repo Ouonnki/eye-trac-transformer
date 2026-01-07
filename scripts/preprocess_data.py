@@ -139,20 +139,21 @@ def process_single_subject(
         for trial in subject.trials:
             preprocessor.preprocess_trial(trial)
 
-            # 获取眼动点
-            gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
-            gaze_points = gaze_trajectory if gaze_trajectory else trial.raw_gaze_points
-
-            if not gaze_points:
+            # 获取点击事件（来自 raw_gaze_points，即 sheet3）
+            click_points = trial.raw_gaze_points
+            if not click_points:
                 continue
 
-            # 分割
+            # 获取眼动轨迹（来自 gaze_trajectory，即 sheet4）
+            gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
+
+            # 分割：第一个参数是点击事件，第二个参数是眼动轨迹
             segmenter = AdaptiveSegmenter(
                 task_config=trial.config,
                 screen_width=screen_width,
                 screen_height=screen_height,
             )
-            segments = segmenter.segment(gaze_points, gaze_trajectory)
+            segments = segmenter.segment(click_points, gaze_trajectory)
 
             if not segments:
                 continue
