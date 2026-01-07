@@ -3,6 +3,7 @@
 深度学习Transformer实验
 
 使用层级Transformer网络进行眼动注意力预测实验。
+需要先运行 scripts/preprocess_data.py 预处理数据。
 """
 
 import os
@@ -10,7 +11,6 @@ import sys
 import logging
 import json
 import pickle
-import gc
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -18,22 +18,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from tqdm import tqdm
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.loader import DataLoader as GazeDataLoader
-from src.data.preprocessor import GazePreprocessor
-from src.data.schemas import SubjectData
-from src.segmentation.event_segmenter import AdaptiveSegmenter
-from src.models.dl_dataset import (
-    SequenceConfig,
-    SequenceFeatureExtractor,
-    HierarchicalGazeDataset,
-    create_subject_splits,
-)
+from src.models.dl_dataset import SequenceConfig, create_subject_splits, collate_fn
 from src.models.dl_trainer import TrainingConfig, DeepLearningTrainer
 
 # 配置日志
@@ -44,164 +36,147 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _load_single_subject(
-    subject_id: str,
-    loader: GazeDataLoader,
-    preprocessor: GazePreprocessor,
-    screen_width: int,
-    screen_height: int,
-) -> Optional[SubjectData]:
+class LightweightGazeDataset(Dataset):
     """
-    加载并处理单个被试数据
+    轻量级眼动数据集
 
-    Args:
-        subject_id: 被试ID
-        loader: 数据加载器（共享）
-        preprocessor: 预处理器（共享）
-        screen_width: 屏幕宽度
-        screen_height: 屏幕高度
-
-    Returns:
-        处理后的SubjectData或None
+    直接使用预处理好的numpy数据，不需要SubjectData对象。
     """
-    try:
-        subject = loader.load_subject(subject_id)
 
-        for trial in subject.trials:
-            preprocessor.preprocess_trial(trial)
+    def __init__(
+        self,
+        data: List[Dict],
+        config: SequenceConfig,
+        fit_normalizer: bool = False,
+        normalizer_stats: Optional[Dict] = None,
+    ):
+        """
+        初始化
 
-            if trial.raw_gaze_points or hasattr(trial, 'gaze_trajectory'):
-                segmenter = AdaptiveSegmenter(
-                    task_config=trial.config,
-                    screen_width=screen_width,
-                    screen_height=screen_height,
-                )
-                gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
-                gaze_points = gaze_trajectory if gaze_trajectory else trial.raw_gaze_points
-                if gaze_points:
-                    segments = segmenter.segment(gaze_points, gaze_trajectory)
-                    trial.segments = segments
-                else:
-                    trial.segments = []
-            else:
-                trial.segments = []
+        Args:
+            data: 预处理后的数据列表
+            config: 序列配置
+            fit_normalizer: 是否拟合归一化器
+            normalizer_stats: 已有的归一化统计量
+        """
+        self.data = data
+        self.config = config
 
-            # 清理不需要的原始数据，节省内存
-            trial.raw_gaze_points = None
-            if hasattr(trial, 'gaze_trajectory'):
-                trial.gaze_trajectory = None
-
-        valid_trials = [t for t in subject.trials if len(t.segments) > 0]
-        if len(valid_trials) > 0:
-            subject.trials = valid_trials
-            return subject
-
-    except Exception as e:
-        pass
-
-    return None
-
-
-def load_all_subjects(
-    data_dir: str,
-    screen_width: int = 1920,
-    screen_height: int = 1080,
-    use_cache: bool = True,
-    cache_dir: str = None,
-) -> List[SubjectData]:
-    """
-    加载所有被试数据（顺序加载 + 缓存，内存优化）
-
-    Args:
-        data_dir: 数据目录
-        screen_width: 屏幕宽度
-        screen_height: 屏幕高度
-        use_cache: 是否使用缓存（首次加载后保存，后续直接读取）
-        cache_dir: 缓存目录，默认为 data_dir 同级的 .cache 目录
-
-    Returns:
-        被试数据列表
-    """
-    # 设置缓存路径
-    if cache_dir is None:
-        cache_dir = Path(data_dir).parent / '.cache'
-    else:
-        cache_dir = Path(cache_dir)
-
-    cache_file = cache_dir / 'processed_subjects.pkl'
-
-    # 尝试从缓存加载
-    if use_cache and cache_file.exists():
-        logger.info(f'Loading from cache: {cache_file}')
-        try:
-            with open(cache_file, 'rb') as f:
-                subjects = pickle.load(f)
-            logger.info(f'Loaded {len(subjects)} subjects from cache')
-            return subjects
-        except Exception as e:
-            logger.warning(f'Cache load failed: {e}, reloading from raw data...')
-
-    # 创建共享的loader和preprocessor（避免重复加载标签文件）
-    loader = GazeDataLoader(data_dir)
-    loader.load_labels()
-    loader.load_tasks()
-    preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
-
-    subject_ids = loader.get_all_subject_ids()
-    logger.info(f'Loading {len(subject_ids)} subjects sequentially...')
-
-    subjects = []
-    failed_count = 0
-
-    for subject_id in tqdm(subject_ids, desc='Loading subjects'):
-        subject = _load_single_subject(
-            subject_id, loader, preprocessor, screen_width, screen_height
-        )
-        if subject is not None:
-            subjects.append(subject)
+        # 归一化统计量
+        if normalizer_stats is not None:
+            self.stats = normalizer_stats
         else:
-            failed_count += 1
+            self.stats = {
+                'dt_mean': 0.0, 'dt_std': 1.0,
+                'velocity_mean': 0.0, 'velocity_std': 1.0,
+                'acceleration_mean': 0.0, 'acceleration_std': 1.0,
+            }
 
-        # 每处理20个被试强制垃圾回收
-        if len(subjects) % 20 == 0:
-            gc.collect()
+        if fit_normalizer:
+            self._fit_normalizer()
 
-    logger.info(f'Loaded {len(subjects)} subjects, {failed_count} failed')
+    def _fit_normalizer(self):
+        """计算归一化统计量"""
+        all_dt = []
+        all_velocity = []
+        all_acceleration = []
 
-    # 保存到缓存
-    if use_cache and len(subjects) > 0:
-        try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            with open(cache_file, 'wb') as f:
-                pickle.dump(subjects, f)
-            logger.info(f'Cache saved to: {cache_file}')
-        except Exception as e:
-            logger.warning(f'Failed to save cache: {e}')
+        for subject_data in self.data:
+            for task in subject_data['tasks']:
+                for features in task['segments']:
+                    if len(features) > 1:
+                        all_dt.extend(features[1:, 2].tolist())
+                        all_velocity.extend(features[1:, 3].tolist())
+                        all_acceleration.extend(features[1:, 4].tolist())
 
-    return subjects
+        if all_dt:
+            self.stats['dt_mean'] = float(np.mean(all_dt))
+            self.stats['dt_std'] = float(np.std(all_dt)) + 1e-8
+        if all_velocity:
+            self.stats['velocity_mean'] = float(np.mean(all_velocity))
+            self.stats['velocity_std'] = float(np.std(all_velocity)) + 1e-8
+        if all_acceleration:
+            self.stats['acceleration_mean'] = float(np.mean(all_acceleration))
+            self.stats['acceleration_std'] = float(np.std(all_acceleration)) + 1e-8
+
+    def _normalize(self, features: np.ndarray) -> np.ndarray:
+        """归一化特征"""
+        normalized = features.copy()
+        if len(features) > 1:
+            normalized[1:, 2] = (features[1:, 2] - self.stats['dt_mean']) / self.stats['dt_std']
+            normalized[1:, 3] = (features[1:, 3] - self.stats['velocity_mean']) / self.stats['velocity_std']
+            normalized[1:, 4] = (features[1:, 4] - self.stats['acceleration_mean']) / self.stats['acceleration_std']
+        return normalized
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        subject_data = self.data[idx]
+
+        # 初始化张量
+        segments = np.zeros(
+            (self.config.max_tasks, self.config.max_segments,
+             self.config.max_seq_len, self.config.input_dim),
+            dtype=np.float32
+        )
+        segment_lengths = np.zeros(
+            (self.config.max_tasks, self.config.max_segments),
+            dtype=np.int64
+        )
+        segment_mask = np.zeros(
+            (self.config.max_tasks, self.config.max_segments),
+            dtype=np.bool_
+        )
+        task_lengths = np.zeros(self.config.max_tasks, dtype=np.int64)
+        task_mask = np.zeros(self.config.max_tasks, dtype=np.bool_)
+
+        # 填充数据
+        for t_idx, task in enumerate(subject_data['tasks'][:self.config.max_tasks]):
+            num_segments = min(len(task['segments']), self.config.max_segments)
+            task_lengths[t_idx] = num_segments
+            task_mask[t_idx] = True
+
+            for s_idx, features in enumerate(task['segments'][:self.config.max_segments]):
+                # 归一化
+                normalized = self._normalize(features)
+                seq_len = min(len(normalized), self.config.max_seq_len)
+                if seq_len > 0:
+                    segments[t_idx, s_idx, :seq_len, :] = normalized[:seq_len]
+                    segment_lengths[t_idx, s_idx] = seq_len
+                    segment_mask[t_idx, s_idx] = True
+
+        return {
+            'segments': torch.from_numpy(segments),
+            'segment_lengths': torch.from_numpy(segment_lengths),
+            'segment_mask': torch.from_numpy(segment_mask),
+            'task_lengths': torch.from_numpy(task_lengths),
+            'task_mask': torch.from_numpy(task_mask),
+            'label': torch.tensor(subject_data['label'], dtype=torch.float32),
+            'subject_id': subject_data['subject_id'],
+        }
+
+
+def load_processed_data(data_path: str) -> List[Dict]:
+    """加载预处理好的数据"""
+    logger.info(f'Loading preprocessed data from: {data_path}')
+    with open(data_path, 'rb') as f:
+        data = pickle.load(f)
+    logger.info(f'Loaded {len(data)} subjects')
+    return data
 
 
 def run_cross_validation(
-    subjects: List[SubjectData],
+    data: List[Dict],
     config: TrainingConfig,
     n_splits: int = 5,
 ) -> Dict:
-    """
-    运行交叉验证
-
-    Args:
-        subjects: 被试数据列表
-        config: 训练配置
-        n_splits: 折数
-
-    Returns:
-        实验结果
-    """
+    """运行交叉验证"""
     logger.info(f'Running {n_splits}-fold cross-validation...')
 
     # 获取被试ID列表
-    subject_ids = [s.subject_id for s in subjects]
-    subject_dict = {s.subject_id: s for s in subjects}
+    subject_ids = [d['subject_id'] for d in data]
+    subject_dict = {d['subject_id']: d for d in data}
 
     # 创建交叉验证划分
     splits = create_subject_splits(subject_ids, n_splits=n_splits, random_state=42)
@@ -227,26 +202,21 @@ def run_cross_validation(
         logger.info(f'{"="*60}')
 
         # 获取训练和验证数据
-        train_subjects = [subject_dict[sid] for sid in train_ids]
-        val_subjects = [subject_dict[sid] for sid in val_ids]
+        train_data = [subject_dict[sid] for sid in train_ids]
+        val_data = [subject_dict[sid] for sid in val_ids]
 
-        # 创建特征提取器
-        feature_extractor = SequenceFeatureExtractor(seq_config)
-
-        # 创建数据集（在训练集上拟合归一化器）
-        train_dataset = HierarchicalGazeDataset(
-            subjects=train_subjects,
+        # 创建数据集
+        train_dataset = LightweightGazeDataset(
+            data=train_data,
             config=seq_config,
-            feature_extractor=feature_extractor,
             fit_normalizer=True,
         )
 
-        # 使用训练集的归一化器
-        val_dataset = HierarchicalGazeDataset(
-            subjects=val_subjects,
+        val_dataset = LightweightGazeDataset(
+            data=val_data,
             config=seq_config,
-            feature_extractor=feature_extractor,
             fit_normalizer=False,
+            normalizer_stats=train_dataset.stats,
         )
 
         # 创建训练器
@@ -329,7 +299,6 @@ def save_results(results: Dict, output_dir: str) -> None:
     # 保存JSON结果
     results_path = os.path.join(output_dir, 'dl_experiment_results.json')
 
-    # 创建可序列化的结果副本
     serializable_results = {
         'overall_metrics': results['overall_metrics'],
         'fold_r2_mean': results['fold_r2_mean'],
@@ -363,98 +332,92 @@ def main():
     print('=' * 70)
 
     # ============================================================
-    # 路径配置（服务器上需要修改）
-    # 注意：输出放到 /data 分区，因为 / 分区只剩 7.5G
+    # 路径配置
     # ============================================================
-    data_dir = 'data/gaze_trajectory_data'  # 修改为服务器实际数据路径
-    output_dir = 'outputs/dl_models'   # 输出到 /data 分区（有186G可用）
+    processed_data_path = 'data/processed/processed_data.pkl'  # 预处理数据路径
+    output_dir = 'outputs/dl_models'
 
     # ============================================================
-    # 服务器优化配置
-    # 硬件：单张 RTX 3090 (24GB) + 16核 Xeon + 31GB 内存
+    # 训练配置
     # ============================================================
     config = TrainingConfig(
-        # 模型参数（充分利用24GB显存）
+        # 模型参数
         input_dim=7,
-        segment_d_model=128,       # 增大：64 -> 128
-        segment_nhead=8,           # 增大：4 -> 8
-        segment_num_layers=6,      # 增大：4 -> 6
-        task_d_model=256,          # 增大：128 -> 256
-        task_nhead=8,              # 增大：4 -> 8
-        task_num_layers=4,         # 增大：2 -> 4
-        attention_dim=64,          # 增大：32 -> 64
+        segment_d_model=128,
+        segment_nhead=8,
+        segment_num_layers=6,
+        task_d_model=256,
+        task_nhead=8,
+        task_num_layers=4,
+        attention_dim=64,
         dropout=0.1,
         max_seq_len=100,
         max_tasks=30,
         max_segments=30,
 
-        # 训练参数（针对单张3090优化）
-        batch_size=16,             # 单卡保守值（可尝试增大到24）
-        learning_rate=1e-4,        # 单卡标准学习率
+        # 训练参数
+        batch_size=16,
+        learning_rate=1e-4,
         weight_decay=1e-4,
         warmup_epochs=5,
         epochs=100,
         patience=15,
         grad_clip=1.0,
 
-        # 加速配置（单GPU + AMP）
-        use_multi_gpu=False,       # 单GPU，关闭DataParallel
-        use_amp=True,              # 混合精度（FP16加速约1.5-2倍）
-        num_workers=8,             # 8个数据加载进程（16核的一半）
-        pin_memory=True,           # 锁页内存加速GPU传输
+        # 加速配置
+        use_multi_gpu=False,
+        use_amp=True,
+        num_workers=4,  # 减少worker数量，因为数据已经预处理
+        pin_memory=True,
 
         # 输出
         output_dir=output_dir,
         save_best=True,
     )
 
-    # 打印配置信息
+    # 打印配置
     print(f'\n{"="*50}')
-    print('Training Configuration:')
+    print('Configuration:')
     print(f'{"="*50}')
-    print(f'Data Dir: {data_dir}')
+    print(f'Processed Data: {processed_data_path}')
     print(f'Output Dir: {output_dir}')
     print(f'Batch Size: {config.batch_size}')
-    print(f'Learning Rate: {config.learning_rate}')
-    print(f'Mixed Precision (AMP): {config.use_amp}')
-    print(f'Num Workers: {config.num_workers}')
     print(f'Model: segment_d={config.segment_d_model}, task_d={config.task_d_model}')
-    print(f'Epochs: {config.epochs}, Patience: {config.patience}')
 
-    # 检查GPU配置
+    # GPU信息
     if torch.cuda.is_available():
-        n_gpus = torch.cuda.device_count()
-        print(f'\n{"="*40}')
-        print('GPU Information:')
-        print(f'{"="*40}')
-        for i in range(n_gpus):
-            props = torch.cuda.get_device_properties(i)
-            print(f'GPU {i}: {props.name}')
-            print(f'  Memory: {props.total_memory / 1e9:.1f} GB')
-        print(f'Total GPUs: {n_gpus}')
+        print(f'\nGPU: {torch.cuda.get_device_name(0)}')
+        print(f'Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
     else:
-        print('\nWARNING: No GPU available, training will be slow!')
+        print('\nWARNING: No GPU available!')
 
-    # 加载数据
-    subjects = load_all_subjects(data_dir)
-
-    if len(subjects) == 0:
-        print('ERROR: No subjects loaded!')
+    # 检查预处理数据是否存在
+    if not os.path.exists(processed_data_path):
+        print(f'\nERROR: 预处理数据不存在: {processed_data_path}')
+        print('请先运行预处理脚本:')
+        print('  python scripts/preprocess_data.py --data_dir <数据目录>')
         return
 
-    # 统计信息
-    total_trials = sum(len(s.trials) for s in subjects)
+    # 加载数据
+    data = load_processed_data(processed_data_path)
+
+    if len(data) == 0:
+        print('ERROR: No data loaded!')
+        return
+
+    # 统计
+    total_tasks = sum(len(d['tasks']) for d in data)
     total_segments = sum(
-        sum(len(t.segments) for t in s.trials)
-        for s in subjects
+        sum(len(t['segments']) for t in d['tasks'])
+        for d in data
     )
     print(f'\nData Statistics:')
-    print(f'  Subjects: {len(subjects)}')
-    print(f'  Trials: {total_trials}')
+    print(f'  Subjects: {len(data)}')
+    print(f'  Tasks: {total_tasks}')
     print(f'  Segments: {total_segments}')
 
     # 运行交叉验证
-    results = run_cross_validation(subjects, config, n_splits=5)
+    results = run_cross_validation(data, config, n_splits=5)
 
     # 打印结果
     print_results(results)
