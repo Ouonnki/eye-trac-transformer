@@ -11,8 +11,10 @@ import logging
 import json
 import pickle
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Tuple, Optional
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -43,15 +45,70 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _load_single_subject(
+    args: Tuple[str, str, int, int]
+) -> Optional[SubjectData]:
+    """
+    加载单个被试数据（用于多进程并行）
+
+    Args:
+        args: (subject_id, data_dir, screen_width, screen_height)
+
+    Returns:
+        处理后的SubjectData或None
+    """
+    subject_id, data_dir, screen_width, screen_height = args
+
+    try:
+        # 每个进程需要独立创建loader和preprocessor
+        loader = GazeDataLoader(data_dir)
+        loader.load_labels()
+        loader.load_tasks()
+        preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
+
+        subject = loader.load_subject(subject_id)
+
+        for trial in subject.trials:
+            preprocessor.preprocess_trial(trial)
+
+            if trial.raw_gaze_points or hasattr(trial, 'gaze_trajectory'):
+                segmenter = AdaptiveSegmenter(
+                    task_config=trial.config,
+                    screen_width=screen_width,
+                    screen_height=screen_height,
+                )
+                gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
+                gaze_points = gaze_trajectory if gaze_trajectory else trial.raw_gaze_points
+                if gaze_points:
+                    segments = segmenter.segment(gaze_points, gaze_trajectory)
+                    trial.segments = segments
+                else:
+                    trial.segments = []
+            else:
+                trial.segments = []
+
+        valid_trials = [t for t in subject.trials if len(t.segments) > 0]
+        if len(valid_trials) > 0:
+            subject.trials = valid_trials
+            return subject
+
+    except Exception as e:
+        # 在子进程中不打印日志，返回None表示失败
+        pass
+
+    return None
+
+
 def load_all_subjects(
     data_dir: str,
     screen_width: int = 1920,
     screen_height: int = 1080,
     use_cache: bool = True,
     cache_dir: str = None,
+    num_workers: int = None,
 ) -> List[SubjectData]:
     """
-    加载所有被试数据（支持缓存加速）
+    加载所有被试数据（支持缓存和多进程并行加速）
 
     Args:
         data_dir: 数据目录
@@ -59,6 +116,7 @@ def load_all_subjects(
         screen_height: 屏幕高度
         use_cache: 是否使用缓存（首次加载后保存，后续直接读取）
         cache_dir: 缓存目录，默认为 data_dir 同级的 .cache 目录
+        num_workers: 并行进程数，默认为CPU核心数的一半
 
     Returns:
         被试数据列表
@@ -82,49 +140,38 @@ def load_all_subjects(
         except Exception as e:
             logger.warning(f'Cache load failed: {e}, reloading from raw data...')
 
-    # 从原始数据加载
-    logger.info('Loading subject data from raw files...')
+    # 确定并行进程数
+    if num_workers is None:
+        num_workers = max(1, mp.cpu_count() // 2)  # 使用一半CPU核心
 
+    # 获取所有被试ID
     loader = GazeDataLoader(data_dir)
     loader.load_labels()
     loader.load_tasks()
-    preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
-
-    subjects = []
     subject_ids = loader.get_all_subject_ids()
 
-    # 使用进度条显示加载进度
-    for subject_id in tqdm(subject_ids, desc='Loading subjects'):
-        try:
-            subject = loader.load_subject(subject_id)
+    logger.info(f'Loading {len(subject_ids)} subjects using {num_workers} parallel workers...')
 
-            for trial in subject.trials:
-                preprocessor.preprocess_trial(trial)
+    # 准备参数
+    args_list = [(sid, data_dir, screen_width, screen_height) for sid in subject_ids]
 
-                if trial.raw_gaze_points or hasattr(trial, 'gaze_trajectory'):
-                    segmenter = AdaptiveSegmenter(
-                        task_config=trial.config,
-                        screen_width=screen_width,
-                        screen_height=screen_height,
-                    )
-                    gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
-                    gaze_points = gaze_trajectory if gaze_trajectory else trial.raw_gaze_points
-                    if gaze_points:
-                        segments = segmenter.segment(gaze_points, gaze_trajectory)
-                        trial.segments = segments
-                    else:
-                        trial.segments = []
-                else:
-                    trial.segments = []
+    # 多进程并行加载
+    subjects = []
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        # 提交所有任务
+        futures = {executor.submit(_load_single_subject, args): args[0] for args in args_list}
 
-            valid_trials = [t for t in subject.trials if len(t.segments) > 0]
-            if len(valid_trials) > 0:
-                subject.trials = valid_trials
-                subjects.append(subject)
-
-        except Exception as e:
-            logger.warning(f'Failed to load subject {subject_id}: {e}')
-            continue
+        # 使用进度条显示进度
+        with tqdm(total=len(futures), desc=f'Loading subjects ({num_workers} workers)') as pbar:
+            for future in as_completed(futures):
+                subject_id = futures[future]
+                try:
+                    result = future.result()
+                    if result is not None:
+                        subjects.append(result)
+                except Exception as e:
+                    logger.warning(f'Failed to load subject {subject_id}: {e}')
+                pbar.update(1)
 
     logger.info(f'Loaded {len(subjects)} subjects from raw data')
 
