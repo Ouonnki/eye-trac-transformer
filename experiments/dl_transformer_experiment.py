@@ -10,11 +10,10 @@ import sys
 import logging
 import json
 import pickle
+import gc
 from datetime import datetime
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -46,26 +45,26 @@ logger = logging.getLogger(__name__)
 
 
 def _load_single_subject(
-    args: Tuple[str, str, int, int]
+    subject_id: str,
+    loader: GazeDataLoader,
+    preprocessor: GazePreprocessor,
+    screen_width: int,
+    screen_height: int,
 ) -> Optional[SubjectData]:
     """
-    加载单个被试数据（用于多进程并行）
+    加载并处理单个被试数据
 
     Args:
-        args: (subject_id, data_dir, screen_width, screen_height)
+        subject_id: 被试ID
+        loader: 数据加载器（共享）
+        preprocessor: 预处理器（共享）
+        screen_width: 屏幕宽度
+        screen_height: 屏幕高度
 
     Returns:
         处理后的SubjectData或None
     """
-    subject_id, data_dir, screen_width, screen_height = args
-
     try:
-        # 每个进程需要独立创建loader和preprocessor
-        loader = GazeDataLoader(data_dir)
-        loader.load_labels()
-        loader.load_tasks()
-        preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
-
         subject = loader.load_subject(subject_id)
 
         for trial in subject.trials:
@@ -87,13 +86,17 @@ def _load_single_subject(
             else:
                 trial.segments = []
 
+            # 清理不需要的原始数据，节省内存
+            trial.raw_gaze_points = None
+            if hasattr(trial, 'gaze_trajectory'):
+                trial.gaze_trajectory = None
+
         valid_trials = [t for t in subject.trials if len(t.segments) > 0]
         if len(valid_trials) > 0:
             subject.trials = valid_trials
             return subject
 
     except Exception as e:
-        # 在子进程中不打印日志，返回None表示失败
         pass
 
     return None
@@ -105,10 +108,9 @@ def load_all_subjects(
     screen_height: int = 1080,
     use_cache: bool = True,
     cache_dir: str = None,
-    num_workers: int = None,
 ) -> List[SubjectData]:
     """
-    加载所有被试数据（支持缓存和多进程并行加速）
+    加载所有被试数据（顺序加载 + 缓存，内存优化）
 
     Args:
         data_dir: 数据目录
@@ -116,7 +118,6 @@ def load_all_subjects(
         screen_height: 屏幕高度
         use_cache: 是否使用缓存（首次加载后保存，后续直接读取）
         cache_dir: 缓存目录，默认为 data_dir 同级的 .cache 目录
-        num_workers: 并行进程数，默认为CPU核心数的一半
 
     Returns:
         被试数据列表
@@ -140,40 +141,32 @@ def load_all_subjects(
         except Exception as e:
             logger.warning(f'Cache load failed: {e}, reloading from raw data...')
 
-    # 确定并行进程数
-    if num_workers is None:
-        num_workers = max(1, mp.cpu_count() // 2)  # 使用一半CPU核心
-
-    # 获取所有被试ID
+    # 创建共享的loader和preprocessor（避免重复加载标签文件）
     loader = GazeDataLoader(data_dir)
     loader.load_labels()
     loader.load_tasks()
+    preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
+
     subject_ids = loader.get_all_subject_ids()
+    logger.info(f'Loading {len(subject_ids)} subjects sequentially...')
 
-    logger.info(f'Loading {len(subject_ids)} subjects using {num_workers} parallel workers...')
-
-    # 准备参数
-    args_list = [(sid, data_dir, screen_width, screen_height) for sid in subject_ids]
-
-    # 多进程并行加载
     subjects = []
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        # 提交所有任务
-        futures = {executor.submit(_load_single_subject, args): args[0] for args in args_list}
+    failed_count = 0
 
-        # 使用进度条显示进度
-        with tqdm(total=len(futures), desc=f'Loading subjects ({num_workers} workers)') as pbar:
-            for future in as_completed(futures):
-                subject_id = futures[future]
-                try:
-                    result = future.result()
-                    if result is not None:
-                        subjects.append(result)
-                except Exception as e:
-                    logger.warning(f'Failed to load subject {subject_id}: {e}')
-                pbar.update(1)
+    for subject_id in tqdm(subject_ids, desc='Loading subjects'):
+        subject = _load_single_subject(
+            subject_id, loader, preprocessor, screen_width, screen_height
+        )
+        if subject is not None:
+            subjects.append(subject)
+        else:
+            failed_count += 1
 
-    logger.info(f'Loaded {len(subjects)} subjects from raw data')
+        # 每处理20个被试强制垃圾回收
+        if len(subjects) % 20 == 0:
+            gc.collect()
+
+    logger.info(f'Loaded {len(subjects)} subjects, {failed_count} failed')
 
     # 保存到缓存
     if use_cache and len(subjects) > 0:
