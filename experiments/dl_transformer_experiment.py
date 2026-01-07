@@ -9,13 +9,16 @@ import os
 import sys
 import logging
 import json
+import pickle
 from datetime import datetime
 from typing import List, Dict
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from tqdm import tqdm
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,47 +43,71 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_all_subjects(data_dir: str, screen_width: int = 1920, screen_height: int = 1080) -> List[SubjectData]:
+def load_all_subjects(
+    data_dir: str,
+    screen_width: int = 1920,
+    screen_height: int = 1080,
+    use_cache: bool = True,
+    cache_dir: str = None,
+) -> List[SubjectData]:
     """
-    加载所有被试数据
+    加载所有被试数据（支持缓存加速）
 
     Args:
         data_dir: 数据目录
         screen_width: 屏幕宽度
         screen_height: 屏幕高度
+        use_cache: 是否使用缓存（首次加载后保存，后续直接读取）
+        cache_dir: 缓存目录，默认为 data_dir 同级的 .cache 目录
 
     Returns:
         被试数据列表
     """
-    logger.info('Loading subject data...')
+    # 设置缓存路径
+    if cache_dir is None:
+        cache_dir = Path(data_dir).parent / '.cache'
+    else:
+        cache_dir = Path(cache_dir)
+
+    cache_file = cache_dir / 'processed_subjects.pkl'
+
+    # 尝试从缓存加载
+    if use_cache and cache_file.exists():
+        logger.info(f'Loading from cache: {cache_file}')
+        try:
+            with open(cache_file, 'rb') as f:
+                subjects = pickle.load(f)
+            logger.info(f'Loaded {len(subjects)} subjects from cache')
+            return subjects
+        except Exception as e:
+            logger.warning(f'Cache load failed: {e}, reloading from raw data...')
+
+    # 从原始数据加载
+    logger.info('Loading subject data from raw files...')
 
     loader = GazeDataLoader(data_dir)
-    loader.load_labels()  # 加载标签
-    loader.load_tasks()   # 加载任务配置
+    loader.load_labels()
+    loader.load_tasks()
     preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
 
     subjects = []
     subject_ids = loader.get_all_subject_ids()
 
-    for subject_id in subject_ids:
+    # 使用进度条显示加载进度
+    for subject_id in tqdm(subject_ids, desc='Loading subjects'):
         try:
-            # 加载被试数据
             subject = loader.load_subject(subject_id)
 
-            # 分割片段
             for trial in subject.trials:
-                # 预处理眼动数据（将DataFrame转换为GazePoint列表）
                 preprocessor.preprocess_trial(trial)
 
                 if trial.raw_gaze_points or hasattr(trial, 'gaze_trajectory'):
-                    # 使用AdaptiveSegmenter进行片段分割
                     segmenter = AdaptiveSegmenter(
                         task_config=trial.config,
                         screen_width=screen_width,
                         screen_height=screen_height,
                     )
                     gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
-                    # 对于分割，优先使用gaze_trajectory（连续眼动轨迹）
                     gaze_points = gaze_trajectory if gaze_trajectory else trial.raw_gaze_points
                     if gaze_points:
                         segments = segmenter.segment(gaze_points, gaze_trajectory)
@@ -90,7 +117,6 @@ def load_all_subjects(data_dir: str, screen_width: int = 1920, screen_height: in
                 else:
                     trial.segments = []
 
-            # 过滤掉没有有效片段的被试
             valid_trials = [t for t in subject.trials if len(t.segments) > 0]
             if len(valid_trials) > 0:
                 subject.trials = valid_trials
@@ -100,7 +126,18 @@ def load_all_subjects(data_dir: str, screen_width: int = 1920, screen_height: in
             logger.warning(f'Failed to load subject {subject_id}: {e}')
             continue
 
-    logger.info(f'Loaded {len(subjects)} subjects')
+    logger.info(f'Loaded {len(subjects)} subjects from raw data')
+
+    # 保存到缓存
+    if use_cache and len(subjects) > 0:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, 'wb') as f:
+                pickle.dump(subjects, f)
+            logger.info(f'Cache saved to: {cache_file}')
+        except Exception as e:
+            logger.warning(f'Failed to save cache: {e}')
+
     return subjects
 
 
