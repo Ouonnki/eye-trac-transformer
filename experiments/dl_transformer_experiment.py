@@ -285,15 +285,19 @@ def main():
     print('Hierarchical Transformer Network for Gaze Attention Prediction')
     print('=' * 70)
 
-    # 配置路径（服务器上需要修改此路径）
-    data_dir = r'd:\Ouonnki\cadt\boost\data\data\gaze_trajectory_data'
-    output_dir = r'd:\Ouonnki\cadt\boost\data\outputs\dl_models'
+    # ============================================================
+    # 路径配置（服务器上需要修改）
+    # 注意：输出放到 /data 分区，因为 / 分区只剩 7.5G
+    # ============================================================
+    data_dir = '/data/gaze_trajectory_data'  # 修改为服务器实际数据路径
+    output_dir = '/data/outputs/dl_models'   # 输出到 /data 分区（有186G可用）
 
     # ============================================================
-    # 服务器优化配置（双3090 + 16核CPU + 32GB内存）
+    # 服务器优化配置
+    # 硬件：单张 RTX 3090 (24GB) + 16核 Xeon + 31GB 内存
     # ============================================================
     config = TrainingConfig(
-        # 模型参数（可适当增大以利用GPU显存）
+        # 模型参数（充分利用24GB显存）
         input_dim=7,
         segment_d_model=128,       # 增大：64 -> 128
         segment_nhead=8,           # 增大：4 -> 8
@@ -307,19 +311,19 @@ def main():
         max_tasks=30,
         max_segments=30,
 
-        # 训练参数（针对双3090优化）
-        batch_size=32,             # 增大：8 -> 32（双3090可支持更大batch）
-        learning_rate=2e-4,        # 增大：1e-4 -> 2e-4（配合更大batch）
+        # 训练参数（针对单张3090优化）
+        batch_size=16,             # 单卡保守值（可尝试增大到24）
+        learning_rate=1e-4,        # 单卡标准学习率
         weight_decay=1e-4,
         warmup_epochs=5,
         epochs=100,
         patience=15,
         grad_clip=1.0,
 
-        # 加速配置
-        use_multi_gpu=True,        # 启用双GPU并行
-        use_amp=True,              # 启用混合精度训练（加速约2倍）
-        num_workers=8,             # 8个数据加载进程（16核CPU的一半）
+        # 加速配置（单GPU + AMP）
+        use_multi_gpu=False,       # 单GPU，关闭DataParallel
+        use_amp=True,              # 混合精度（FP16加速约1.5-2倍）
+        num_workers=8,             # 8个数据加载进程（16核的一半）
         pin_memory=True,           # 锁页内存加速GPU传输
 
         # 输出
@@ -328,16 +332,17 @@ def main():
     )
 
     # 打印配置信息
-    print(f'\n{"="*40}')
+    print(f'\n{"="*50}')
     print('Training Configuration:')
-    print(f'{"="*40}')
-    print(f'Device: {config.device}')
-    print(f'Multi-GPU: {config.use_multi_gpu}')
-    print(f'Mixed Precision (AMP): {config.use_amp}')
+    print(f'{"="*50}')
+    print(f'Data Dir: {data_dir}')
+    print(f'Output Dir: {output_dir}')
     print(f'Batch Size: {config.batch_size}')
+    print(f'Learning Rate: {config.learning_rate}')
+    print(f'Mixed Precision (AMP): {config.use_amp}')
     print(f'Num Workers: {config.num_workers}')
     print(f'Model: segment_d={config.segment_d_model}, task_d={config.task_d_model}')
-    print(f'Output: {output_dir}')
+    print(f'Epochs: {config.epochs}, Patience: {config.patience}')
 
     # 检查GPU配置
     if torch.cuda.is_available():

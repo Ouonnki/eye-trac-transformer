@@ -95,20 +95,25 @@ SubjectAggregator: 注意力池化 → 被试表示
 
 ## 服务器训练配置
 
-针对双3090 GPU服务器优化：
+针对单张 RTX 3090 (24GB) + 16核 Xeon + 31GB 内存优化：
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| batch_size | 32 | 充分利用48GB显存 |
-| use_multi_gpu | True | DataParallel并行 |
-| use_amp | True | 混合精度加速 |
-| num_workers | 8 | 多进程数据加载 |
+| batch_size | 16 | 单卡保守值（可尝试24） |
+| use_multi_gpu | False | 单GPU |
+| use_amp | True | FP16混合精度加速 |
+| num_workers | 8 | 16核CPU的一半 |
+| pin_memory | True | 锁页内存加速 |
 
-预期训练时间：约20-30分钟（5折交叉验证）
+**重要路径配置**：
+- 数据目录：`/data/gaze_trajectory_data`
+- 输出目录：`/data/outputs/dl_models`（避免使用 / 分区）
+
+预期训练时间：约 30-45 分钟（5折交叉验证）
 
 ## 输出结果
 
-训练完成后，结果保存在 `outputs/dl_models/`：
+训练完成后，结果保存在 `/data/outputs/dl_models/`：
 
 - `model_fold{i}.pt`: 各折模型权重
 - `cv_results.json`: 交叉验证指标
