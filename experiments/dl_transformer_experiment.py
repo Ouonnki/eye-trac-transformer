@@ -326,8 +326,8 @@ def main():
     # 路径配置（服务器上需要修改）
     # 注意：输出放到 /data 分区，因为 / 分区只剩 7.5G
     # ============================================================
-    data_dir = '/data/gaze_trajectory_data'  # 修改为服务器实际数据路径
-    output_dir = '/data/outputs/dl_models'   # 输出到 /data 分区（有186G可用）
+    data_dir = 'data/gaze_trajectory_data'  # 修改为服务器实际数据路径
+    output_dir = 'outputs/dl_models'   # 输出到 /data 分区（有186G可用）
 
     # ============================================================
     # 服务器优化配置
