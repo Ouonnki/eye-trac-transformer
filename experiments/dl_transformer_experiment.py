@@ -331,11 +331,12 @@ def run_2x2_experiment(
 
         # 执行划分
         splits = splitter.split(data)
-        split_summary = splitter.get_split_summary()
+        split_summary = splitter.get_split_summary(splits)
 
         logger.info(f'Split Summary:')
         for name, info in split_summary.items():
-            logger.info(f'  {name}: {info["samples"]} samples, {info["subjects"]} subjects, {info["tasks"]} tasks')
+            if name != 'config':
+                logger.info(f'  {name}: {info["samples"]} samples, {info["subjects"]} subjects, {info["tasks"]} tasks')
 
         # 创建数据集
         train_dataset = LightweightGazeDataset(

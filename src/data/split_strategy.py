@@ -201,6 +201,91 @@ class TwoByTwoSplitter:
 
         return info
 
+    def get_split_summary(self, splits: Dict[str, List[Dict]] = None) -> Dict[str, Dict]:
+        """
+        获取划分摘要
+
+        Args:
+            splits: split() 方法返回的划分数据字典，如果为 None 则返回配置信息
+
+        Returns:
+            各划分的摘要字典：
+            {
+                'train': {'samples': N, 'subjects': K, 'tasks': M, 'description': '...'},
+                'test1': {...},
+                ...
+            }
+        """
+        descriptions = {
+            'train': '训练集（前K人×前N题）',
+            'test1': '新人旧题（跨被试泛化）',
+            'test2': '旧人新题（跨任务泛化）',
+            'test3': '新人新题（双重泛化）',
+        }
+
+        if splits is None:
+            # 返回配置信息（无实际数据时）
+            return {
+                'train': {
+                    'samples': 0,
+                    'subjects': self.train_subjects,
+                    'tasks': self.train_tasks,
+                    'description': descriptions['train'],
+                },
+                'test1': {
+                    'samples': 0,
+                    'subjects': 0,
+                    'tasks': self.train_tasks,
+                    'description': descriptions['test1'],
+                },
+                'test2': {
+                    'samples': 0,
+                    'subjects': self.train_subjects,
+                    'tasks': 0,
+                    'description': descriptions['test2'],
+                },
+                'test3': {
+                    'samples': 0,
+                    'subjects': 0,
+                    'tasks': 0,
+                    'description': descriptions['test3'],
+                },
+                'config': {
+                    'train_subjects': self.train_subjects,
+                    'train_tasks': self.train_tasks,
+                    'random_state': self.random_state,
+                }
+            }
+
+        # 根据实际划分数据计算摘要
+        summary = {}
+        for split_name in ['train', 'test1', 'test2', 'test3']:
+            split_data = splits.get(split_name, [])
+            n_samples = len(split_data)
+            n_subjects = len(set(d['subject_id'] for d in split_data)) if split_data else 0
+
+            task_ids = set()
+            for d in split_data:
+                for task in d['tasks']:
+                    task_ids.add(task['task_id'])
+            n_tasks = len(task_ids)
+
+            summary[split_name] = {
+                'samples': n_samples,
+                'subjects': n_subjects,
+                'tasks': n_tasks,
+                'description': descriptions.get(split_name, ''),
+            }
+
+        # 添加配置信息
+        summary['config'] = {
+            'train_subjects': self.train_subjects,
+            'train_tasks': self.train_tasks,
+            'random_state': self.random_state,
+        }
+
+        return summary
+
 
 class KFoldSplitter:
     """
