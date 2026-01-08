@@ -597,7 +597,7 @@ def main():
     # ============================================================
     # 选择配置模式: 'full' (完整模型), 'medium' (中等), 'light' (轻量)
     # 如果显存不足，从 full -> medium -> light 依次尝试
-    MODEL_MODE = os.environ.get('MODEL_MODE', 'medium')
+    MODEL_MODE = os.environ.get('MODEL_MODE', 'full')
 
     if MODEL_MODE == 'full':
         # 完整模型配置（需要较大显存，约24GB+）
