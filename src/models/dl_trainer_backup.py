@@ -3,7 +3,6 @@
 深度学习训练器模块
 
 提供用于层级Transformer网络的训练、验证和评估功能。
-支持训练曲线可视化和增强的指标显示。
 """
 
 import os
@@ -20,15 +19,6 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from tqdm import tqdm
-
-# matplotlib 可选导入（用于训练曲线绘制）
-try:
-    import matplotlib
-    matplotlib.use('Agg')  # 使用非交互式后端
-    import matplotlib.pyplot as plt
-    HAS_MATPLOTLIB = True
-except ImportError:
-    HAS_MATPLOTLIB = False
 
 from src.models.dl_models import HierarchicalTransformerNetwork
 from src.models.dl_dataset import HierarchicalGazeDataset, collate_fn
@@ -74,11 +64,6 @@ class TrainingConfig:
     output_dir: str = 'outputs/dl_models'
     save_best: bool = True
 
-    # 图表配置
-    save_figures: bool = True  # 是否保存训练曲线图
-    figure_dpi: int = 150  # 图表分辨率
-    summary_interval: int = 10  # 阶段性汇总间隔（每N个epoch）
-
 
 class EarlyStopping:
     """早停机制"""
@@ -98,22 +83,19 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.best_epoch = 0  # 记录最佳epoch
 
-    def __call__(self, score: float, epoch: int = 0) -> bool:
+    def __call__(self, score: float) -> bool:
         """
         检查是否应该早停
 
         Args:
             score: 当前分数
-            epoch: 当前epoch
 
         Returns:
             是否应该早停
         """
         if self.best_score is None:
             self.best_score = score
-            self.best_epoch = epoch
             return False
 
         if self.mode == 'min':
@@ -123,7 +105,6 @@ class EarlyStopping:
 
         if improved:
             self.best_score = score
-            self.best_epoch = epoch
             self.counter = 0
         else:
             self.counter += 1
@@ -249,158 +230,6 @@ class DeepLearningTrainer:
             self.config.epochs,
         )
         return optimizer, scheduler
-
-    def plot_training_curves(self, save_path: Optional[str] = None, fold: int = 0) -> Optional[str]:
-        """
-        绘制训练曲线（2×2 子图布局）
-
-        包含：
-        - Loss 曲线 (train/val)
-        - R² 曲线 (val)
-        - MAE 曲线 (val)
-        - Learning Rate 曲线
-
-        Args:
-            save_path: 保存路径，None 则使用默认路径
-            fold: 当前折数
-
-        Returns:
-            保存的图片路径，如果失败则返回 None
-        """
-        if not HAS_MATPLOTLIB:
-            logger.warning('matplotlib 未安装，无法生成训练曲线图')
-            return None
-
-        if not self.history['train_loss']:
-            logger.warning('训练历史为空，无法生成图表')
-            return None
-
-        # 设置中文字体
-        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
-        plt.rcParams['axes.unicode_minus'] = False
-
-        # 创建 2×2 子图
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        fig.suptitle(f'训练曲线 (Fold {fold + 1})', fontsize=14, fontweight='bold')
-
-        epochs = range(1, len(self.history['train_loss']) + 1)
-
-        # 子图1: Loss 曲线
-        ax1 = axes[0, 0]
-        ax1.plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', linewidth=2)
-        ax1.plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', linewidth=2)
-        ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Loss (MSE)')
-        ax1.set_title('Loss 曲线')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-
-        # 标记最佳点
-        best_epoch = np.argmin(self.history['val_loss']) + 1
-        best_val_loss = min(self.history['val_loss'])
-        ax1.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best @ {best_epoch}')
-        ax1.scatter([best_epoch], [best_val_loss], color='g', s=100, zorder=5)
-
-        # 子图2: R² 曲线
-        ax2 = axes[0, 1]
-        ax2.plot(epochs, self.history['val_r2'], 'g-', label='Val R2', linewidth=2)
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('R2')
-        ax2.set_title('R2 曲线')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        # 标记最佳 R²
-        best_r2_epoch = np.argmax(self.history['val_r2']) + 1
-        best_r2 = max(self.history['val_r2'])
-        ax2.axvline(x=best_r2_epoch, color='b', linestyle='--', alpha=0.7)
-        ax2.scatter([best_r2_epoch], [best_r2], color='b', s=100, zorder=5)
-        ax2.annotate(f'Best: {best_r2:.4f}', xy=(best_r2_epoch, best_r2),
-                     xytext=(10, -10), textcoords='offset points', fontsize=9)
-
-        # 子图3: MAE 曲线
-        ax3 = axes[1, 0]
-        ax3.plot(epochs, self.history['val_mae'], 'm-', label='Val MAE', linewidth=2)
-        ax3.set_xlabel('Epoch')
-        ax3.set_ylabel('MAE')
-        ax3.set_title('MAE 曲线')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-        # 标记最佳 MAE
-        best_mae_epoch = np.argmin(self.history['val_mae']) + 1
-        best_mae = min(self.history['val_mae'])
-        ax3.axvline(x=best_mae_epoch, color='c', linestyle='--', alpha=0.7)
-        ax3.scatter([best_mae_epoch], [best_mae], color='c', s=100, zorder=5)
-        ax3.annotate(f'Best: {best_mae:.4f}', xy=(best_mae_epoch, best_mae),
-                     xytext=(10, 10), textcoords='offset points', fontsize=9)
-
-        # 子图4: Learning Rate 曲线
-        ax4 = axes[1, 1]
-        ax4.plot(epochs, self.history['learning_rate'], 'c-', label='Learning Rate', linewidth=2)
-        ax4.set_xlabel('Epoch')
-        ax4.set_ylabel('Learning Rate')
-        ax4.set_title('学习率曲线')
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
-        ax4.set_yscale('log')  # 对数刻度更清晰
-
-        plt.tight_layout()
-
-        # 保存图片
-        if save_path is None:
-            save_path = os.path.join(self.config.output_dir, f'training_curves_fold{fold}.png')
-
-        plt.savefig(save_path, dpi=self.config.figure_dpi, bbox_inches='tight')
-        plt.close(fig)
-
-        logger.info(f'训练曲线已保存: {save_path}')
-        return save_path
-
-    def _print_epoch_summary(
-        self,
-        epoch: int,
-        initial_train_loss: float,
-        initial_val_loss: float,
-        initial_val_r2: float,
-        best_val_loss: float,
-        best_epoch: int,
-    ) -> None:
-        """
-        打印阶段性汇总
-
-        Args:
-            epoch: 当前 epoch
-            initial_train_loss: 初始训练损失
-            initial_val_loss: 初始验证损失
-            initial_val_r2: 初始验证 R²
-            best_val_loss: 最佳验证损失
-            best_epoch: 最佳 epoch
-        """
-        current_train_loss = self.history['train_loss'][-1]
-        current_val_loss = self.history['val_loss'][-1]
-        current_val_r2 = self.history['val_r2'][-1]
-
-        train_change = ((current_train_loss - initial_train_loss) / initial_train_loss) * 100
-        val_change = ((current_val_loss - initial_val_loss) / initial_val_loss) * 100
-        r2_change = ((current_val_r2 - initial_val_r2) / abs(initial_val_r2 + 1e-8)) * 100
-
-        train_arrow = '↓' if train_change < 0 else '↑'
-        val_arrow = '↓' if val_change < 0 else '↑'
-        r2_arrow = '↑' if r2_change > 0 else '↓'
-
-        print('\n' + '╔' + '═' * 60 + '╗')
-        print(f'║  Epoch {epoch} 阶段汇总' + ' ' * (60 - 15 - len(str(epoch))) + '║')
-        print('╠' + '═' * 60 + '╣')
-        print(f'║  Train Loss: {initial_train_loss:.4f} → {current_train_loss:.4f} ({train_arrow}{abs(train_change):.1f}%)' +
-              ' ' * (60 - 45 - len(f'{abs(train_change):.1f}')) + '║')
-        print(f'║  Val Loss:   {initial_val_loss:.4f} → {current_val_loss:.4f} ({val_arrow}{abs(val_change):.1f}%)' +
-              ' ' * (60 - 45 - len(f'{abs(val_change):.1f}')) + '║')
-        print(f'║  Val R2:     {initial_val_r2:.4f} → {current_val_r2:.4f} ({r2_arrow}{abs(r2_change):.1f}%)' +
-              ' ' * (60 - 45 - len(f'{abs(r2_change):.1f}')) + '║')
-        print(f'║  Best Val Loss: {best_val_loss:.4f} @ Epoch {best_epoch}' +
-              ' ' * (60 - 35 - len(str(best_epoch))) + '║')
-        print('╚' + '═' * 60 + '╝\n')
 
     def train_epoch(
         self,
@@ -618,12 +447,6 @@ class DeepLearningTrainer:
 
         # 训练循环
         pbar = tqdm(range(self.config.epochs), desc=f'Fold {fold+1}')
-
-        # 记录初始指标用于阶段性汇总
-        initial_train_loss = None
-        initial_val_loss = None
-        initial_val_r2 = None
-
         for epoch in pbar:
             # 训练
             train_loss = self.train_epoch(
@@ -644,48 +467,25 @@ class DeepLearningTrainer:
             self.history['val_mae'].append(val_metrics['mae'])
             self.history['learning_rate'].append(current_lr)
 
-            # 记录初始值
-            if epoch == 0:
-                initial_train_loss = train_loss
-                initial_val_loss = val_metrics['loss']
-                initial_val_r2 = val_metrics['r2']
-
-            # 更新进度条（增强显示）
+            # 更新进度条
             pbar.set_postfix({
-                'loss': f'{train_loss:.3f}',
-                'val_loss': f'{val_metrics["loss"]:.3f}',
-                'R2': f'{val_metrics["r2"]:.3f}',
-                'MAE': f'{val_metrics["mae"]:.2f}',
-                'lr': f'{current_lr:.1e}',
+                'train_loss': f'{train_loss:.4f}',
+                'val_loss': f'{val_metrics["loss"]:.4f}',
+                'val_r2': f'{val_metrics["r2"]:.4f}',
+                'lr': f'{current_lr:.6f}',
             })
 
             # 保存最佳模型（处理DataParallel包装）
             if best_metrics is None or val_metrics['loss'] < best_metrics['loss']:
                 best_metrics = val_metrics.copy()
-                best_metrics['epoch'] = epoch + 1
                 # 获取原始模型状态（去除DataParallel包装）
                 if isinstance(self.model, nn.DataParallel):
                     best_model_state = self.model.module.state_dict().copy()
                 else:
                     best_model_state = self.model.state_dict().copy()
 
-            # 阶段性汇总（每 summary_interval 个 epoch）
-            if (epoch + 1) % self.config.summary_interval == 0 and epoch > 0:
-                self._print_epoch_summary(
-                    epoch=epoch + 1,
-                    initial_train_loss=initial_train_loss,
-                    initial_val_loss=initial_val_loss,
-                    initial_val_r2=initial_val_r2,
-                    best_val_loss=early_stopping.best_score if early_stopping.best_score else val_metrics['loss'],
-                    best_epoch=early_stopping.best_epoch + 1,
-                )
-
             # 早停检查
-            if early_stopping(val_metrics['loss'], epoch):
-                print(f'\n{"="*60}')
-                print(f'  Early stopping triggered at epoch {epoch+1} (patience={self.config.patience})')
-                print(f'  Best model saved at epoch {early_stopping.best_epoch + 1} with val_loss={early_stopping.best_score:.4f}')
-                print(f'{"="*60}\n')
+            if early_stopping(val_metrics['loss']):
                 logger.info(f'Early stopping at epoch {epoch+1}')
                 break
 
@@ -707,13 +507,8 @@ class DeepLearningTrainer:
                 'model_state_dict': save_state,
                 'config': self.config,
                 'metrics': best_metrics,
-                'history': self.history,  # 保存训练历史
             }, model_path)
             logger.info(f'Model saved to {model_path}')
-
-        # 保存训练曲线图
-        if self.config.save_figures:
-            self.plot_training_curves(fold=fold)
 
         return best_metrics
 

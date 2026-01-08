@@ -3,6 +3,10 @@
 深度学习Transformer实验
 
 使用层级Transformer网络进行眼动注意力预测实验。
+支持两种实验设计：
+- 2×2 矩阵划分：验证跨被试和跨任务泛化能力
+- K-Fold 交叉验证：传统交叉验证
+
 需要先运行 scripts/preprocess_data.py 预处理数据。
 """
 
@@ -11,6 +15,7 @@ import sys
 import logging
 import json
 import pickle
+import time
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -27,6 +32,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.dl_dataset import SequenceConfig, create_subject_splits, collate_fn
 from src.models.dl_trainer import TrainingConfig, DeepLearningTrainer
+from experiments.experiment_config import ExperimentConfig
+from src.data.split_strategy import TwoByTwoSplitter, KFoldSplitter
 
 # 配置日志
 logging.basicConfig(
@@ -276,62 +283,300 @@ def run_cross_validation(
     return results
 
 
+def run_2x2_experiment(
+    data: List[Dict],
+    training_config: TrainingConfig,
+    experiment_config: ExperimentConfig,
+) -> Dict:
+    """
+    运行 2×2 实验设计
+
+    Args:
+        data: 预处理后的数据
+        training_config: 训练配置
+        experiment_config: 实验配置
+
+    Returns:
+        实验结果字典
+    """
+    start_time = time.time()
+
+    logger.info(f'Running 2×2 experiment design...')
+    logger.info(f'Train subjects: {experiment_config.train_subjects}')
+    logger.info(f'Train tasks: {experiment_config.train_tasks}')
+    logger.info(f'Repeats: {experiment_config.n_repeats}')
+
+    # 序列配置
+    seq_config = SequenceConfig(
+        max_seq_len=training_config.max_seq_len,
+        max_tasks=training_config.max_tasks,
+        max_segments=training_config.max_segments,
+        input_dim=training_config.input_dim,
+    )
+
+    # 创建划分器
+    splitter = TwoByTwoSplitter(
+        train_subjects=experiment_config.train_subjects,
+        train_tasks=experiment_config.train_tasks,
+        random_state=experiment_config.random_seed,
+    )
+
+    # 多次重复实验的结果收集
+    all_repeat_results = []
+
+    for repeat in range(experiment_config.n_repeats):
+        logger.info(f'\n{"="*60}')
+        logger.info(f'Repeat {repeat + 1}/{experiment_config.n_repeats}')
+        logger.info(f'{"="*60}')
+
+        # 执行划分
+        splits = splitter.split(data)
+        split_summary = splitter.get_split_summary()
+
+        logger.info(f'Split Summary:')
+        for name, info in split_summary.items():
+            logger.info(f'  {name}: {info["samples"]} samples, {info["subjects"]} subjects, {info["tasks"]} tasks')
+
+        # 创建数据集
+        train_dataset = LightweightGazeDataset(
+            data=splits['train'],
+            config=seq_config,
+            fit_normalizer=True,
+        )
+
+        # 所有测试集使用相同的归一化参数
+        test_datasets = {}
+        for split_name in ['test1', 'test2', 'test3']:
+            if splits[split_name]:
+                test_datasets[split_name] = LightweightGazeDataset(
+                    data=splits[split_name],
+                    config=seq_config,
+                    fit_normalizer=False,
+                    normalizer_stats=train_dataset.stats,
+                )
+
+        # 创建训练器并训练
+        trainer = DeepLearningTrainer(training_config)
+        train_metrics = trainer.train(
+            train_dataset,
+            test_datasets.get('test1', test_datasets.get('test2')),  # 使用 test1 作为验证集
+            fold=repeat,
+        )
+
+        # 评估所有测试集
+        repeat_metrics = {'train': train_metrics}
+        repeat_predictions = {}
+
+        for split_name, dataset in test_datasets.items():
+            predictions, labels, _ = trainer.predict(dataset)
+
+            metrics = {
+                'r2': r2_score(labels, predictions),
+                'mae': mean_absolute_error(labels, predictions),
+                'rmse': np.sqrt(mean_squared_error(labels, predictions)),
+            }
+            repeat_metrics[split_name] = metrics
+
+            # 收集预测结果
+            for i, sample in enumerate(splits[split_name]):
+                repeat_predictions[sample['subject_id']] = {
+                    'subject_id': sample['subject_id'],
+                    'split': split_name,
+                    'true_score': float(labels[i]),
+                    'predicted_score': float(predictions[i]),
+                    'error': float(abs(predictions[i] - labels[i])),
+                }
+
+            logger.info(f'{split_name} Results:')
+            logger.info(f'  R²: {metrics["r2"]:.4f}')
+            logger.info(f'  MAE: {metrics["mae"]:.4f}')
+            logger.info(f'  RMSE: {metrics["rmse"]:.4f}')
+
+        all_repeat_results.append({
+            'metrics': repeat_metrics,
+            'predictions': repeat_predictions,
+            'split_summary': split_summary,
+        })
+
+    # 汇总结果
+    duration = time.time() - start_time
+
+    # 计算平均指标
+    avg_metrics = {}
+    for split_name in ['train', 'test1', 'test2', 'test3']:
+        split_metrics = [r['metrics'].get(split_name, {}) for r in all_repeat_results if split_name in r['metrics']]
+        if split_metrics:
+            avg_metrics[split_name] = {
+                'r2': np.mean([m['r2'] for m in split_metrics]),
+                'r2_std': np.std([m['r2'] for m in split_metrics]) if len(split_metrics) > 1 else 0,
+                'mae': np.mean([m['mae'] for m in split_metrics]),
+                'mae_std': np.std([m['mae'] for m in split_metrics]) if len(split_metrics) > 1 else 0,
+                'rmse': np.mean([m['rmse'] for m in split_metrics]),
+                'rmse_std': np.std([m['rmse'] for m in split_metrics]) if len(split_metrics) > 1 else 0,
+            }
+
+    # 添加描述
+    metric_descriptions = {
+        'train': '训练集',
+        'test1': '跨被试泛化（新人旧题）',
+        'test2': '跨任务泛化（旧人新题）',
+        'test3': '双重泛化（新人新题）',
+    }
+
+    for split_name, desc in metric_descriptions.items():
+        if split_name in avg_metrics:
+            avg_metrics[split_name]['description'] = desc
+
+    results = {
+        'experiment_info': {
+            'mode': experiment_config.mode,
+            'split_type': experiment_config.split_type,
+            'train_subjects': experiment_config.train_subjects,
+            'train_tasks': experiment_config.train_tasks,
+            'n_repeats': experiment_config.n_repeats,
+            'timestamp': datetime.now().isoformat(),
+            'duration_seconds': duration,
+        },
+        'split_summary': all_repeat_results[0]['split_summary'] if all_repeat_results else {},
+        'metrics': avg_metrics,
+        'repeat_results': [r['metrics'] for r in all_repeat_results],
+        'predictions': all_repeat_results[-1]['predictions'] if all_repeat_results else {},
+    }
+
+    return results
+
+
 def print_results(results: Dict) -> None:
     """打印结果"""
     print('\n' + '=' * 70)
     print('EXPERIMENT RESULTS: Hierarchical Transformer Network')
     print('=' * 70)
 
-    print('\nOverall Metrics (Cross-Validation):')
-    print('-' * 40)
-    print(f"  R2:   {results['overall_metrics']['r2']:.4f}")
-    print(f"  MAE:  {results['overall_metrics']['mae']:.4f}")
-    print(f"  RMSE: {results['overall_metrics']['rmse']:.4f}")
+    # 检测结果类型
+    if 'experiment_info' in results:
+        # 2×2 实验结果
+        info = results['experiment_info']
+        print(f'\n实验模式: {info["mode"]}')
+        print(f'划分策略: {info["split_type"]}')
+        print(f'训练被试数: {info["train_subjects"]}')
+        print(f'训练任务数: {info["train_tasks"]}')
+        print(f'重复次数: {info["n_repeats"]}')
+        print(f'耗时: {info["duration_seconds"]:.1f}秒')
 
-    print('\nFold-wise Metrics:')
-    print('-' * 40)
-    print(f"  R2:  {results['fold_r2_mean']:.4f} +/- {results['fold_r2_std']:.4f}")
-    print(f"  MAE: {results['fold_mae_mean']:.4f} +/- {results['fold_mae_std']:.4f}")
+        print('\n' + '-' * 50)
+        print('各测试集指标:')
+        print('-' * 50)
 
-    print('\nPer-Fold Results:')
-    print('-' * 40)
-    for i, metrics in enumerate(results['fold_metrics']):
-        print(f"  Fold {i+1}: R2={metrics['r2']:.4f}, MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}")
+        metrics = results['metrics']
+        for split_name in ['train', 'test1', 'test2', 'test3']:
+            if split_name in metrics:
+                m = metrics[split_name]
+                desc = m.get('description', split_name)
+                print(f'\n  {split_name} ({desc}):')
+                if 'r2_std' in m and m['r2_std'] > 0:
+                    print(f'    R2:   {m["r2"]:.4f} +/- {m["r2_std"]:.4f}')
+                    print(f'    MAE:  {m["mae"]:.4f} +/- {m["mae_std"]:.4f}')
+                    print(f'    RMSE: {m["rmse"]:.4f} +/- {m["rmse_std"]:.4f}')
+                else:
+                    print(f'    R2:   {m["r2"]:.4f}')
+                    print(f'    MAE:  {m["mae"]:.4f}')
+                    print(f'    RMSE: {m["rmse"]:.4f}')
+
+    else:
+        # K-Fold 交叉验证结果
+        print('\nOverall Metrics (Cross-Validation):')
+        print('-' * 40)
+        print(f"  R2:   {results['overall_metrics']['r2']:.4f}")
+        print(f"  MAE:  {results['overall_metrics']['mae']:.4f}")
+        print(f"  RMSE: {results['overall_metrics']['rmse']:.4f}")
+
+        print('\nFold-wise Metrics:')
+        print('-' * 40)
+        print(f"  R2:  {results['fold_r2_mean']:.4f} +/- {results['fold_r2_std']:.4f}")
+        print(f"  MAE: {results['fold_mae_mean']:.4f} +/- {results['fold_mae_std']:.4f}")
+
+        print('\nPer-Fold Results:')
+        print('-' * 40)
+        for i, metrics in enumerate(results['fold_metrics']):
+            print(f"  Fold {i+1}: R2={metrics['r2']:.4f}, MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}")
 
     print('\n' + '=' * 70)
 
 
-def save_results(results: Dict, output_dir: str) -> None:
+def save_results(results: Dict, output_dir: str, experiment_config: Optional[ExperimentConfig] = None) -> None:
     """保存结果"""
     os.makedirs(output_dir, exist_ok=True)
 
-    # 保存JSON结果
-    results_path = os.path.join(output_dir, 'dl_experiment_results.json')
+    # 检测结果类型
+    if 'experiment_info' in results:
+        # 2×2 实验结果
+        results_path = os.path.join(output_dir, 'experiment_results.json')
 
-    serializable_results = {
-        'overall_metrics': results['overall_metrics'],
-        'fold_r2_mean': results['fold_r2_mean'],
-        'fold_r2_std': results['fold_r2_std'],
-        'fold_mae_mean': results['fold_mae_mean'],
-        'fold_mae_std': results['fold_mae_std'],
-        'fold_metrics': results['fold_metrics'],
-        'timestamp': datetime.now().isoformat(),
-    }
+        # 转换 numpy 类型为 Python 原生类型
+        def convert_to_serializable(obj):
+            if isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            return obj
 
-    with open(results_path, 'w', encoding='utf-8') as f:
-        json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+        serializable_results = convert_to_serializable(results)
 
-    logger.info(f'Results saved to {results_path}')
+        with open(results_path, 'w', encoding='utf-8') as f:
+            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
 
-    # 保存预测结果CSV
-    predictions_df = pd.DataFrame({
-        'subject_id': results['subject_ids'],
-        'true_score': results['labels'],
-        'predicted_score': results['predictions'],
-    })
-    predictions_path = os.path.join(output_dir, 'dl_predictions.csv')
-    predictions_df.to_csv(predictions_path, index=False)
-    logger.info(f'Predictions saved to {predictions_path}')
+        logger.info(f'Results saved to {results_path}')
+
+        # 保存预测结果 CSV（带 split 标记）
+        if 'predictions' in results and results['predictions']:
+            predictions_list = list(results['predictions'].values())
+            predictions_df = pd.DataFrame(predictions_list)
+            predictions_df = predictions_df[['subject_id', 'split', 'true_score', 'predicted_score', 'error']]
+            predictions_path = os.path.join(output_dir, 'predictions.csv')
+            predictions_df.to_csv(predictions_path, index=False)
+            logger.info(f'Predictions saved to {predictions_path}')
+
+        # 保存配置快照
+        if experiment_config:
+            config_path = os.path.join(output_dir, 'config.json')
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(experiment_config.to_dict(), f, indent=2, ensure_ascii=False)
+            logger.info(f'Config saved to {config_path}')
+
+    else:
+        # K-Fold 交叉验证结果（保持兼容）
+        results_path = os.path.join(output_dir, 'dl_experiment_results.json')
+
+        serializable_results = {
+            'overall_metrics': results['overall_metrics'],
+            'fold_r2_mean': results['fold_r2_mean'],
+            'fold_r2_std': results['fold_r2_std'],
+            'fold_mae_mean': results['fold_mae_mean'],
+            'fold_mae_std': results['fold_mae_std'],
+            'fold_metrics': results['fold_metrics'],
+            'timestamp': datetime.now().isoformat(),
+        }
+
+        with open(results_path, 'w', encoding='utf-8') as f:
+            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+
+        logger.info(f'Results saved to {results_path}')
+
+        # 保存预测结果CSV
+        predictions_df = pd.DataFrame({
+            'subject_id': results['subject_ids'],
+            'true_score': results['labels'],
+            'predicted_score': results['predictions'],
+        })
+        predictions_path = os.path.join(output_dir, 'dl_predictions.csv')
+        predictions_df.to_csv(predictions_path, index=False)
+        logger.info(f'Predictions saved to {predictions_path}')
 
 
 def main():
@@ -488,14 +733,38 @@ def main():
     print(f'  Tasks: {total_tasks}')
     print(f'  Segments: {total_segments}')
 
-    # 运行交叉验证
-    results = run_cross_validation(data, config, n_splits=5)
+    # ============================================================
+    # 实验配置（从环境变量读取）
+    # ============================================================
+    experiment_config = ExperimentConfig.from_env()
+
+    # 更新输出目录
+    if experiment_config.output_dir:
+        output_dir = experiment_config.output_dir
+        config.output_dir = output_dir
+
+    # 更新图表配置
+    config.save_figures = experiment_config.save_figures
+    config.figure_dpi = experiment_config.figure_dpi
+
+    # 打印实验配置
+    experiment_config.print_config()
+
+    # ============================================================
+    # 运行实验
+    # ============================================================
+    if experiment_config.split_type == '2x2':
+        # 运行 2×2 实验设计
+        results = run_2x2_experiment(data, config, experiment_config)
+    else:
+        # 运行 K-Fold 交叉验证
+        results = run_cross_validation(data, config, n_splits=experiment_config.n_folds)
 
     # 打印结果
     print_results(results)
 
     # 保存结果
-    save_results(results, output_dir)
+    save_results(results, output_dir, experiment_config)
 
     print('\nExperiment completed!')
 
