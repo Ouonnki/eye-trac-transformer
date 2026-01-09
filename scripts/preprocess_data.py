@@ -11,7 +11,8 @@
 输出格式：
     {
         'subject_id': str,
-        'label': float,
+        'label': float,           # 回归标签（总分）
+        'category': int,          # 分类标签（0=低, 1=中, 2=高）
         'tasks': [
             {
                 'task_id': int,
@@ -126,13 +127,23 @@ def process_single_subject(
 ) -> Optional[Dict]:
     """
     处理单个被试，返回轻量级数据结构
+
+    返回数据包含：
+        - subject_id: 被试编号
+        - label: 回归标签（总分，连续值）
+        - category: 分类标签（0=低, 1=中, 2=高，用于分类模式）
+        - tasks: 任务列表
     """
     try:
         subject = loader.load_subject(subject_id)
 
+        # category: 原始数据是 1/2/3，转换为 0/1/2（用于分类模式）
+        category = subject.category - 1  # 1->0, 2->1, 3->2
+
         subject_data = {
             'subject_id': subject.subject_id,
             'label': float(subject.total_score),
+            'category': category,  # 分类标签（0=低, 1=中, 2=高）
             'tasks': []
         }
 
@@ -238,6 +249,17 @@ def main():
     )
     print(f"总任务数: {total_tasks}")
     print(f"总片段数: {total_segments}")
+
+    # 类别分布统计
+    category_counts = {0: 0, 1: 0, 2: 0}
+    for d in all_data:
+        cat = d.get('category', 1)  # 默认中等
+        if cat in category_counts:
+            category_counts[cat] += 1
+    print(f"\n类别分布:")
+    print(f"  低注意力 (0): {category_counts[0]} 人")
+    print(f"  中注意力 (1): {category_counts[1]} 人")
+    print(f"  高注意力 (2): {category_counts[2]} 人")
 
     # 保存
     output_file = output_dir / 'processed_data.pkl'
