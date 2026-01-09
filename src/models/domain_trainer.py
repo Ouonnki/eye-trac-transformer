@@ -177,7 +177,7 @@ class DomainAdaptationTrainer(DeepLearningTrainer):
                 logger.warning(f'类别 {class_id} 没有样本，使用零向量初始化')
 
         # 设置类中心
-        base_model.center_bank.init_centers(centers.to(self.device))
+        base_model.class_centers.init_centers(centers.to(self.device))
         logger.info(f'类中心已初始化，形状: {centers.shape}')
 
     def _compute_grl_alpha(self, epoch: int, total_epochs: int) -> float:
@@ -298,7 +298,7 @@ class DomainAdaptationTrainer(DeepLearningTrainer):
             )
 
             # 获取源域样本对应的类中心
-            s_centers = base_model.center_bank.get_center(s_labels)
+            s_centers = base_model.class_centers.get_center(s_labels)
 
             # 计算 CADT 损失
             losses = self.cadt_loss(
@@ -310,7 +310,7 @@ class DomainAdaptationTrainer(DeepLearningTrainer):
                 target_domain_probs=t_domain_probs,
                 source_dist_probs=s_dist_probs,
                 target_dist_probs=t_dist_probs,
-                all_centers=base_model.center_bank.centers,
+                all_centers=base_model.class_centers.centers,
             )
 
             # 反向传播
