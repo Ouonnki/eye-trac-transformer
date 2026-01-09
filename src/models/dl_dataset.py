@@ -29,6 +29,8 @@ class SequenceConfig:
     screen_width: int = 1920    # 屏幕宽度
     screen_height: int = 1080   # 屏幕高度
     input_dim: int = 7          # 输入特征维度
+    task_type: str = 'regression'  # 任务类型：'classification' 或 'regression'
+    num_classes: int = 3        # 分类模式下的类别数
 
 
 class SequenceFeatureExtractor:
@@ -221,7 +223,8 @@ class HierarchicalGazeDataset(Dataset):
         for subject in self.subjects:
             subject_data = {
                 'subject_id': subject.subject_id,
-                'label': subject.total_score,
+                'label': subject.total_score,       # 回归标签
+                'category': subject.category,       # 分类标签
                 'tasks': []
             }
 
@@ -280,6 +283,7 @@ class HierarchicalGazeDataset(Dataset):
         )
         task_lengths = np.zeros(self.config.max_tasks, dtype=np.int64)
         task_mask = np.zeros(self.config.max_tasks, dtype=np.bool_)
+        task_ids = np.zeros(self.config.max_tasks, dtype=np.int64)
 
         # 填充数据
         num_tasks = len(subject_data['tasks'])
@@ -287,6 +291,8 @@ class HierarchicalGazeDataset(Dataset):
             num_segments = len(task_data['segments'])
             task_lengths[t_idx] = num_segments
             task_mask[t_idx] = True
+            # 任务ID（转换为0-29索引）
+            task_ids[t_idx] = task_data['task_id'] - 1
 
             for s_idx, features in enumerate(task_data['segments']):
                 seq_len = min(len(features), self.config.max_seq_len)
@@ -295,13 +301,21 @@ class HierarchicalGazeDataset(Dataset):
                     segment_lengths[t_idx, s_idx] = seq_len
                     segment_mask[t_idx, s_idx] = True
 
+        # 根据任务类型选择标签
+        if self.config.task_type == 'classification':
+            label = torch.tensor(subject_data['category'], dtype=torch.long)
+        else:
+            label = torch.tensor(subject_data['label'], dtype=torch.float32)
+
         return {
             'segments': torch.from_numpy(segments),
             'segment_lengths': torch.from_numpy(segment_lengths),
             'segment_mask': torch.from_numpy(segment_mask),
             'task_lengths': torch.from_numpy(task_lengths),
             'task_mask': torch.from_numpy(task_mask),
-            'label': torch.tensor(subject_data['label'], dtype=torch.float32),
+            'task_ids': torch.from_numpy(task_ids),
+            'label': label,
+            'category': torch.tensor(subject_data['category'], dtype=torch.long),
             'subject_id': subject_data['subject_id'],
         }
 
@@ -350,6 +364,8 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'segment_mask': torch.stack([b['segment_mask'] for b in batch]),
         'task_lengths': torch.stack([b['task_lengths'] for b in batch]),
         'task_mask': torch.stack([b['task_mask'] for b in batch]),
+        'task_ids': torch.stack([b['task_ids'] for b in batch]),
         'label': torch.stack([b['label'] for b in batch]),
+        'category': torch.stack([b['category'] for b in batch]),
         'subject_ids': [b['subject_id'] for b in batch],
     }

@@ -4,6 +4,7 @@
 
 提供用于层级Transformer网络的训练、验证和评估功能。
 支持训练曲线可视化和增强的指标显示。
+支持分类/回归双模式。
 """
 
 import os
@@ -18,7 +19,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from sklearn.metrics import (
+    r2_score, mean_absolute_error, mean_squared_error,
+    accuracy_score, f1_score, confusion_matrix, classification_report,
+)
 from tqdm import tqdm
 
 # matplotlib 可选导入（用于训练曲线绘制）
@@ -52,6 +56,10 @@ class TrainingConfig:
     max_seq_len: int = 100
     max_tasks: int = 30
     max_segments: int = 30
+
+    # 任务模式
+    task_type: str = 'regression'  # 'classification' 或 'regression'
+    num_classes: int = 3           # 分类模式下的类别数
 
     # 训练参数
     batch_size: int = 8
@@ -198,14 +206,38 @@ class DeepLearningTrainer:
         self.optimizer = None
         self.scheduler = None
 
-        # 训练历史
-        self.history = {
+        # 训练历史（根据任务类型）
+        self.history = self._init_history()
+
+    def _init_history(self) -> Dict[str, List]:
+        """初始化训练历史（根据任务类型）"""
+        base_history = {
             'train_loss': [],
             'val_loss': [],
-            'val_r2': [],
-            'val_mae': [],
             'learning_rate': [],
         }
+
+        if self.config.task_type == 'classification':
+            # 分类模式：准确率、F1分数
+            base_history.update({
+                'val_accuracy': [],
+                'val_f1': [],
+            })
+        else:
+            # 回归模式：R²、MAE
+            base_history.update({
+                'val_r2': [],
+                'val_mae': [],
+            })
+
+        return base_history
+
+    def _create_criterion(self) -> nn.Module:
+        """根据任务类型创建损失函数"""
+        if self.config.task_type == 'classification':
+            return nn.CrossEntropyLoss()
+        else:
+            return nn.MSELoss()
 
     def _create_model(self) -> nn.Module:
         """创建模型（支持多GPU和梯度检查点）"""
@@ -223,6 +255,8 @@ class DeepLearningTrainer:
             max_tasks=self.config.max_tasks,
             max_segments=self.config.max_segments,
             use_gradient_checkpointing=self.config.use_gradient_checkpointing,
+            task_type=self.config.task_type,
+            num_classes=self.config.num_classes,
         )
         model = model.to(self.device)
 
@@ -252,12 +286,12 @@ class DeepLearningTrainer:
 
     def plot_training_curves(self, save_path: Optional[str] = None, fold: int = 0) -> Optional[str]:
         """
-        绘制训练曲线（2×2 子图布局）
+        绘制训练曲线（2×2 子图布局，支持分类/回归双模式）
 
         包含：
         - Loss 曲线 (train/val)
-        - R² 曲线 (val)
-        - MAE 曲线 (val)
+        - 分类模式：Accuracy/F1 曲线
+        - 回归模式：R²/MAE 曲线
         - Learning Rate 曲线
 
         Args:
@@ -281,16 +315,18 @@ class DeepLearningTrainer:
 
         # 创建 2×2 子图
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        fig.suptitle(f'训练曲线 (Fold {fold + 1})', fontsize=14, fontweight='bold')
+        mode_str = '分类' if self.config.task_type == 'classification' else '回归'
+        fig.suptitle(f'训练曲线 (Fold {fold + 1}) - {mode_str}模式', fontsize=14, fontweight='bold')
 
         epochs = range(1, len(self.history['train_loss']) + 1)
 
         # 子图1: Loss 曲线
         ax1 = axes[0, 0]
+        loss_type = 'CrossEntropy' if self.config.task_type == 'classification' else 'MSE'
         ax1.plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', linewidth=2)
         ax1.plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', linewidth=2)
         ax1.set_xlabel('Epoch')
-        ax1.set_ylabel('Loss (MSE)')
+        ax1.set_ylabel(f'Loss ({loss_type})')
         ax1.set_title('Loss 曲线')
         ax1.legend()
         ax1.grid(True, alpha=0.3)
@@ -301,39 +337,75 @@ class DeepLearningTrainer:
         ax1.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best @ {best_epoch}')
         ax1.scatter([best_epoch], [best_val_loss], color='g', s=100, zorder=5)
 
-        # 子图2: R² 曲线
-        ax2 = axes[0, 1]
-        ax2.plot(epochs, self.history['val_r2'], 'g-', label='Val R2', linewidth=2)
-        ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('R2')
-        ax2.set_title('R2 曲线')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
+        # 子图2 和 子图3：根据任务类型绘制
+        if self.config.task_type == 'classification':
+            # 分类模式：Accuracy 曲线
+            ax2 = axes[0, 1]
+            ax2.plot(epochs, self.history['val_accuracy'], 'g-', label='Val Accuracy', linewidth=2)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Accuracy')
+            ax2.set_title('Accuracy 曲线')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
 
-        # 标记最佳 R²
-        best_r2_epoch = np.argmax(self.history['val_r2']) + 1
-        best_r2 = max(self.history['val_r2'])
-        ax2.axvline(x=best_r2_epoch, color='b', linestyle='--', alpha=0.7)
-        ax2.scatter([best_r2_epoch], [best_r2], color='b', s=100, zorder=5)
-        ax2.annotate(f'Best: {best_r2:.4f}', xy=(best_r2_epoch, best_r2),
-                     xytext=(10, -10), textcoords='offset points', fontsize=9)
+            # 标记最佳 Accuracy
+            best_acc_epoch = np.argmax(self.history['val_accuracy']) + 1
+            best_acc = max(self.history['val_accuracy'])
+            ax2.axvline(x=best_acc_epoch, color='b', linestyle='--', alpha=0.7)
+            ax2.scatter([best_acc_epoch], [best_acc], color='b', s=100, zorder=5)
+            ax2.annotate(f'Best: {best_acc:.4f}', xy=(best_acc_epoch, best_acc),
+                         xytext=(10, -10), textcoords='offset points', fontsize=9)
 
-        # 子图3: MAE 曲线
-        ax3 = axes[1, 0]
-        ax3.plot(epochs, self.history['val_mae'], 'm-', label='Val MAE', linewidth=2)
-        ax3.set_xlabel('Epoch')
-        ax3.set_ylabel('MAE')
-        ax3.set_title('MAE 曲线')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
+            # F1 曲线
+            ax3 = axes[1, 0]
+            ax3.plot(epochs, self.history['val_f1'], 'm-', label='Val F1 (weighted)', linewidth=2)
+            ax3.set_xlabel('Epoch')
+            ax3.set_ylabel('F1 Score')
+            ax3.set_title('F1 曲线')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
 
-        # 标记最佳 MAE
-        best_mae_epoch = np.argmin(self.history['val_mae']) + 1
-        best_mae = min(self.history['val_mae'])
-        ax3.axvline(x=best_mae_epoch, color='c', linestyle='--', alpha=0.7)
-        ax3.scatter([best_mae_epoch], [best_mae], color='c', s=100, zorder=5)
-        ax3.annotate(f'Best: {best_mae:.4f}', xy=(best_mae_epoch, best_mae),
-                     xytext=(10, 10), textcoords='offset points', fontsize=9)
+            # 标记最佳 F1
+            best_f1_epoch = np.argmax(self.history['val_f1']) + 1
+            best_f1 = max(self.history['val_f1'])
+            ax3.axvline(x=best_f1_epoch, color='c', linestyle='--', alpha=0.7)
+            ax3.scatter([best_f1_epoch], [best_f1], color='c', s=100, zorder=5)
+            ax3.annotate(f'Best: {best_f1:.4f}', xy=(best_f1_epoch, best_f1),
+                         xytext=(10, 10), textcoords='offset points', fontsize=9)
+        else:
+            # 回归模式：R² 曲线
+            ax2 = axes[0, 1]
+            ax2.plot(epochs, self.history['val_r2'], 'g-', label='Val R2', linewidth=2)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('R2')
+            ax2.set_title('R2 曲线')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+
+            # 标记最佳 R²
+            best_r2_epoch = np.argmax(self.history['val_r2']) + 1
+            best_r2 = max(self.history['val_r2'])
+            ax2.axvline(x=best_r2_epoch, color='b', linestyle='--', alpha=0.7)
+            ax2.scatter([best_r2_epoch], [best_r2], color='b', s=100, zorder=5)
+            ax2.annotate(f'Best: {best_r2:.4f}', xy=(best_r2_epoch, best_r2),
+                         xytext=(10, -10), textcoords='offset points', fontsize=9)
+
+            # MAE 曲线
+            ax3 = axes[1, 0]
+            ax3.plot(epochs, self.history['val_mae'], 'm-', label='Val MAE', linewidth=2)
+            ax3.set_xlabel('Epoch')
+            ax3.set_ylabel('MAE')
+            ax3.set_title('MAE 曲线')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+
+            # 标记最佳 MAE
+            best_mae_epoch = np.argmin(self.history['val_mae']) + 1
+            best_mae = min(self.history['val_mae'])
+            ax3.axvline(x=best_mae_epoch, color='c', linestyle='--', alpha=0.7)
+            ax3.scatter([best_mae_epoch], [best_mae], color='c', s=100, zorder=5)
+            ax3.annotate(f'Best: {best_mae:.4f}', xy=(best_mae_epoch, best_mae),
+                         xytext=(10, 10), textcoords='offset points', fontsize=9)
 
         # 子图4: Learning Rate 曲线
         ax4 = axes[1, 1]
@@ -362,32 +434,40 @@ class DeepLearningTrainer:
         epoch: int,
         initial_train_loss: float,
         initial_val_loss: float,
-        initial_val_r2: float,
+        initial_primary_metric: float,
         best_val_loss: float,
         best_epoch: int,
     ) -> None:
         """
-        打印阶段性汇总
+        打印阶段性汇总（支持分类/回归双模式）
 
         Args:
             epoch: 当前 epoch
             initial_train_loss: 初始训练损失
             initial_val_loss: 初始验证损失
-            initial_val_r2: 初始验证 R²
+            initial_primary_metric: 初始主指标（分类为accuracy，回归为R²）
             best_val_loss: 最佳验证损失
             best_epoch: 最佳 epoch
         """
         current_train_loss = self.history['train_loss'][-1]
         current_val_loss = self.history['val_loss'][-1]
-        current_val_r2 = self.history['val_r2'][-1]
 
         train_change = ((current_train_loss - initial_train_loss) / initial_train_loss) * 100
         val_change = ((current_val_loss - initial_val_loss) / initial_val_loss) * 100
-        r2_change = ((current_val_r2 - initial_val_r2) / abs(initial_val_r2 + 1e-8)) * 100
 
         train_arrow = '↓' if train_change < 0 else '↑'
         val_arrow = '↓' if val_change < 0 else '↑'
-        r2_arrow = '↑' if r2_change > 0 else '↓'
+
+        # 根据任务类型获取主指标
+        if self.config.task_type == 'classification':
+            current_primary = self.history['val_accuracy'][-1]
+            metric_name = 'Val Acc'
+        else:
+            current_primary = self.history['val_r2'][-1]
+            metric_name = 'Val R2'
+
+        primary_change = ((current_primary - initial_primary_metric) / abs(initial_primary_metric + 1e-8)) * 100
+        primary_arrow = '↑' if primary_change > 0 else '↓'
 
         print('\n' + '╔' + '═' * 60 + '╗')
         print(f'║  Epoch {epoch} 阶段汇总' + ' ' * (60 - 15 - len(str(epoch))) + '║')
@@ -396,8 +476,8 @@ class DeepLearningTrainer:
               ' ' * (60 - 45 - len(f'{abs(train_change):.1f}')) + '║')
         print(f'║  Val Loss:   {initial_val_loss:.4f} → {current_val_loss:.4f} ({val_arrow}{abs(val_change):.1f}%)' +
               ' ' * (60 - 45 - len(f'{abs(val_change):.1f}')) + '║')
-        print(f'║  Val R2:     {initial_val_r2:.4f} → {current_val_r2:.4f} ({r2_arrow}{abs(r2_change):.1f}%)' +
-              ' ' * (60 - 45 - len(f'{abs(r2_change):.1f}')) + '║')
+        print(f'║  {metric_name}:     {initial_primary_metric:.4f} → {current_primary:.4f} ({primary_arrow}{abs(primary_change):.1f}%)' +
+              ' ' * (60 - 45 - len(f'{abs(primary_change):.1f}')) + '║')
         print(f'║  Best Val Loss: {best_val_loss:.4f} @ Epoch {best_epoch}' +
               ' ' * (60 - 35 - len(str(best_epoch))) + '║')
         print('╚' + '═' * 60 + '╝\n')
@@ -487,7 +567,7 @@ class DeepLearningTrainer:
         criterion: nn.Module,
     ) -> Dict[str, float]:
         """
-        验证模型（支持混合精度）
+        验证模型（支持混合精度和双模式）
 
         Args:
             model: 模型
@@ -536,19 +616,34 @@ class DeepLearningTrainer:
                 num_batches += 1
 
                 # 收集预测和标签
-                all_predictions.extend(outputs['prediction'].cpu().numpy())
+                if self.config.task_type == 'classification':
+                    # 分类模式：取 argmax 获得预测类别
+                    preds = torch.argmax(outputs['prediction'], dim=-1)
+                    all_predictions.extend(preds.cpu().numpy())
+                else:
+                    # 回归模式：直接使用预测值
+                    all_predictions.extend(outputs['prediction'].cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
 
         # 计算指标
         all_predictions = np.array(all_predictions)
         all_labels = np.array(all_labels)
 
-        metrics = {
-            'loss': total_loss / num_batches,
-            'r2': r2_score(all_labels, all_predictions),
-            'mae': mean_absolute_error(all_labels, all_predictions),
-            'rmse': np.sqrt(mean_squared_error(all_labels, all_predictions)),
-        }
+        if self.config.task_type == 'classification':
+            # 分类模式指标
+            metrics = {
+                'loss': total_loss / num_batches,
+                'accuracy': accuracy_score(all_labels, all_predictions),
+                'f1': f1_score(all_labels, all_predictions, average='weighted'),
+            }
+        else:
+            # 回归模式指标
+            metrics = {
+                'loss': total_loss / num_batches,
+                'r2': r2_score(all_labels, all_predictions),
+                'mae': mean_absolute_error(all_labels, all_predictions),
+                'rmse': np.sqrt(mean_squared_error(all_labels, all_predictions)),
+            }
 
         return metrics
 
@@ -597,8 +692,8 @@ class DeepLearningTrainer:
                     f'num_workers={self.config.num_workers}, '
                     f'pin_memory={loader_kwargs["pin_memory"]}')
 
-        # 损失函数
-        criterion = nn.MSELoss()
+        # 损失函数（根据任务类型）
+        criterion = self._create_criterion()
 
         # 早停
         early_stopping = EarlyStopping(patience=self.config.patience, mode='min')
@@ -607,14 +702,8 @@ class DeepLearningTrainer:
         best_metrics = None
         best_model_state = None
 
-        # 重置历史
-        self.history = {
-            'train_loss': [],
-            'val_loss': [],
-            'val_r2': [],
-            'val_mae': [],
-            'learning_rate': [],
-        }
+        # 重置历史（根据任务类型）
+        self.history = self._init_history()
 
         # 训练循环
         pbar = tqdm(range(self.config.epochs), desc=f'Fold {fold+1}')
@@ -622,7 +711,7 @@ class DeepLearningTrainer:
         # 记录初始指标用于阶段性汇总
         initial_train_loss = None
         initial_val_loss = None
-        initial_val_r2 = None
+        initial_primary_metric = None  # 分类模式为 accuracy，回归模式为 r2
 
         for epoch in pbar:
             # 训练
@@ -637,27 +726,43 @@ class DeepLearningTrainer:
             self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]['lr']
 
-            # 记录历史
+            # 记录历史（根据任务类型）
             self.history['train_loss'].append(train_loss)
             self.history['val_loss'].append(val_metrics['loss'])
-            self.history['val_r2'].append(val_metrics['r2'])
-            self.history['val_mae'].append(val_metrics['mae'])
             self.history['learning_rate'].append(current_lr)
+
+            if self.config.task_type == 'classification':
+                self.history['val_accuracy'].append(val_metrics['accuracy'])
+                self.history['val_f1'].append(val_metrics['f1'])
+                primary_metric = val_metrics['accuracy']
+            else:
+                self.history['val_r2'].append(val_metrics['r2'])
+                self.history['val_mae'].append(val_metrics['mae'])
+                primary_metric = val_metrics['r2']
 
             # 记录初始值
             if epoch == 0:
                 initial_train_loss = train_loss
                 initial_val_loss = val_metrics['loss']
-                initial_val_r2 = val_metrics['r2']
+                initial_primary_metric = primary_metric
 
-            # 更新进度条（增强显示）
-            pbar.set_postfix({
-                'loss': f'{train_loss:.3f}',
-                'val_loss': f'{val_metrics["loss"]:.3f}',
-                'R2': f'{val_metrics["r2"]:.3f}',
-                'MAE': f'{val_metrics["mae"]:.2f}',
-                'lr': f'{current_lr:.1e}',
-            })
+            # 更新进度条（根据任务类型）
+            if self.config.task_type == 'classification':
+                pbar.set_postfix({
+                    'loss': f'{train_loss:.3f}',
+                    'val_loss': f'{val_metrics["loss"]:.3f}',
+                    'Acc': f'{val_metrics["accuracy"]:.3f}',
+                    'F1': f'{val_metrics["f1"]:.3f}',
+                    'lr': f'{current_lr:.1e}',
+                })
+            else:
+                pbar.set_postfix({
+                    'loss': f'{train_loss:.3f}',
+                    'val_loss': f'{val_metrics["loss"]:.3f}',
+                    'R2': f'{val_metrics["r2"]:.3f}',
+                    'MAE': f'{val_metrics["mae"]:.2f}',
+                    'lr': f'{current_lr:.1e}',
+                })
 
             # 保存最佳模型（处理DataParallel包装）
             if best_metrics is None or val_metrics['loss'] < best_metrics['loss']:
@@ -675,7 +780,7 @@ class DeepLearningTrainer:
                     epoch=epoch + 1,
                     initial_train_loss=initial_train_loss,
                     initial_val_loss=initial_val_loss,
-                    initial_val_r2=initial_val_r2,
+                    initial_primary_metric=initial_primary_metric,
                     best_val_loss=early_stopping.best_score if early_stopping.best_score else val_metrics['loss'],
                     best_epoch=early_stopping.best_epoch + 1,
                 )

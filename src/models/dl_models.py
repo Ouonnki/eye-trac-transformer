@@ -235,7 +235,7 @@ class HierarchicalTransformerNetwork(nn.Module):
     2. TaskAggregator: 片段表示 → 任务表示
     3. TaskTransformerEncoder: 任务序列 → 编码任务间依赖
     4. SubjectAggregator: 任务表示 → 被试表示
-    5. PredictionHead: 被试表示 → 分数预测
+    5. PredictionHead: 被试表示 → 分数预测（回归）或类别预测（分类）
     """
 
     def __init__(
@@ -253,6 +253,8 @@ class HierarchicalTransformerNetwork(nn.Module):
         max_tasks: int = 30,
         max_segments: int = 30,
         use_gradient_checkpointing: bool = False,
+        task_type: str = 'regression',
+        num_classes: int = 3,
     ):
         """
         初始化
@@ -271,11 +273,16 @@ class HierarchicalTransformerNetwork(nn.Module):
             max_tasks: 最大任务数
             max_segments: 最大片段数
             use_gradient_checkpointing: 是否使用梯度检查点节省显存
+            task_type: 任务类型（'regression' 或 'classification'）
+            num_classes: 分类模式下的类别数
         """
         super().__init__()
 
         self.max_tasks = max_tasks
         self.max_segments = max_segments
+        self.task_type = task_type
+        self.num_classes = num_classes
+        self.task_d_model = task_d_model
 
         # 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
@@ -314,13 +321,21 @@ class HierarchicalTransformerNetwork(nn.Module):
             dropout=dropout,
         )
 
-        # 预测头
-        self.prediction_head = nn.Sequential(
-            nn.Linear(task_d_model, task_d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(task_d_model // 2, 1),
-        )
+        # 预测头（根据任务类型选择不同的输出维度）
+        if task_type == 'classification':
+            self.prediction_head = nn.Sequential(
+                nn.Linear(task_d_model, task_d_model // 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(task_d_model // 2, num_classes),
+            )
+        else:
+            self.prediction_head = nn.Sequential(
+                nn.Linear(task_d_model, task_d_model // 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(task_d_model // 2, 1),
+            )
 
     def forward(
         self,
@@ -388,11 +403,16 @@ class HierarchicalTransformerNetwork(nn.Module):
         # subject_repr: (batch, task_d_model)
         # task_attention: (batch, tasks)
 
-        # 5. 预测分数
-        prediction = self.prediction_head(subject_repr).squeeze(-1)  # (batch,)
+        # 5. 预测
+        logits = self.prediction_head(subject_repr)  # (batch, num_classes) 或 (batch, 1)
+        if self.task_type == 'classification':
+            prediction = logits  # (batch, num_classes) 保持logits形式，由外部应用softmax
+        else:
+            prediction = logits.squeeze(-1)  # (batch,) 回归分数
 
         return {
             'prediction': prediction,
+            'subject_repr': subject_repr,  # (batch, task_d_model) 用于域迁移
             'segment_attention': segment_attentions,
             'task_attention': task_attention,
         }
@@ -474,4 +494,181 @@ class SimplifiedTransformerNetwork(nn.Module):
         return {
             'prediction': prediction,
             'attention': attention,
+        }
+
+
+class DomainAdaptiveHierarchicalNetwork(HierarchicalTransformerNetwork):
+    """
+    支持域迁移的层级Transformer网络
+
+    继承 HierarchicalTransformerNetwork，添加 CADT 域迁移组件。
+    仅在分类模式下启用域迁移。
+
+    新增组件：
+    - ClassCenterBank: 类中心库（3个中心，对应注意力等级 0/1/2）
+    - DomainDiscriminator: 标准域判别器
+    - DistanceAwareDomainDiscriminator: 距离感知域判别器
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 7,
+        segment_d_model: int = 64,
+        segment_nhead: int = 4,
+        segment_num_layers: int = 4,
+        task_d_model: int = 128,
+        task_nhead: int = 4,
+        task_num_layers: int = 2,
+        attention_dim: int = 32,
+        dropout: float = 0.1,
+        max_seq_len: int = 100,
+        max_tasks: int = 30,
+        max_segments: int = 30,
+        use_gradient_checkpointing: bool = False,
+        task_type: str = 'classification',
+        num_classes: int = 3,
+        enable_domain_adaptation: bool = True,
+    ):
+        """
+        初始化
+
+        Args:
+            enable_domain_adaptation: 是否启用域迁移（仅分类模式下有效）
+            其他参数同 HierarchicalTransformerNetwork
+        """
+        super().__init__(
+            input_dim=input_dim,
+            segment_d_model=segment_d_model,
+            segment_nhead=segment_nhead,
+            segment_num_layers=segment_num_layers,
+            task_d_model=task_d_model,
+            task_nhead=task_nhead,
+            task_num_layers=task_num_layers,
+            attention_dim=attention_dim,
+            dropout=dropout,
+            max_seq_len=max_seq_len,
+            max_tasks=max_tasks,
+            max_segments=max_segments,
+            use_gradient_checkpointing=use_gradient_checkpointing,
+            task_type=task_type,
+            num_classes=num_classes,
+        )
+
+        # 仅分类模式下启用域迁移
+        self.enable_domain_adaptation = enable_domain_adaptation and (task_type == 'classification')
+
+        if self.enable_domain_adaptation:
+            from src.models.domain_adaptation import (
+                ClassCenterBank,
+                DomainDiscriminator,
+                DistanceAwareDomainDiscriminator,
+            )
+
+            # 类中心库（在 subject_repr 维度）
+            self.class_centers = ClassCenterBank(
+                num_classes=num_classes,
+                feature_dim=task_d_model,
+            )
+
+            # 标准域判别器
+            self.domain_discriminator = DomainDiscriminator(
+                input_dim=task_d_model,
+                hidden_dim=task_d_model // 2,
+            )
+
+            # 距离感知域判别器
+            self.distance_aware_discriminator = DistanceAwareDomainDiscriminator(
+                feature_dim=task_d_model,
+                hidden_dim=task_d_model // 2,
+            )
+
+    def set_discriminator_alpha(self, alpha: float):
+        """设置梯度反转强度"""
+        if self.enable_domain_adaptation:
+            self.domain_discriminator.set_alpha(alpha)
+            self.distance_aware_discriminator.set_alpha(alpha)
+
+    def forward(
+        self,
+        segments: torch.Tensor,
+        segment_mask: torch.Tensor,
+        task_mask: torch.Tensor,
+        segment_lengths: Optional[torch.Tensor] = None,
+        category: Optional[torch.Tensor] = None,
+        return_domain_features: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        前向传播
+
+        Args:
+            segments: (batch, max_tasks, max_segments, max_seq_len, input_dim) 眼动序列
+            segment_mask: (batch, max_tasks, max_segments) 有效片段掩码
+            task_mask: (batch, max_tasks) 有效任务掩码
+            segment_lengths: (batch, max_tasks, max_segments) 每个片段的实际长度
+            category: (batch,) 类别标签（用于计算到类中心的距离）
+            return_domain_features: 是否返回域迁移所需的中间特征
+
+        Returns:
+            字典包含：
+            - prediction: 预测结果
+            - subject_repr: 被试表示（用于域迁移）
+            - segment_attention: 片段注意力权重
+            - task_attention: 任务注意力权重
+            如果 return_domain_features=True，还包含：
+            - center_distances: 到对应类中心的距离
+            - centers: 对应的类中心
+            - min_distances: 到最近类中心的距离（目标域用）
+        """
+        # 调用父类的前向传播
+        result = super().forward(
+            segments=segments,
+            segment_mask=segment_mask,
+            task_mask=task_mask,
+            segment_lengths=segment_lengths,
+        )
+
+        # 域迁移特征
+        if return_domain_features and self.enable_domain_adaptation:
+            subject_repr = result['subject_repr']  # (batch, task_d_model)
+
+            if category is not None:
+                # 源域：计算到对应类中心的距离
+                result['center_distances'] = self.class_centers.compute_distance(
+                    subject_repr, category
+                )
+                result['centers'] = self.class_centers.get_center(category)
+            else:
+                # 目标域：计算到最近类中心的距离
+                result['min_distances'] = self.class_centers.compute_min_distance(
+                    subject_repr
+                )
+
+        return result
+
+    def get_domain_probs(
+        self,
+        subject_repr: torch.Tensor,
+        distances: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        获取域判别概率
+
+        Args:
+            subject_repr: (batch, task_d_model) 被试表示
+            distances: (batch, 1) 到类中心的距离
+
+        Returns:
+            字典包含：
+            - domain_probs: 标准域判别概率
+            - dist_domain_probs: 距离感知域判别概率
+        """
+        if not self.enable_domain_adaptation:
+            return {}
+
+        domain_probs = self.domain_discriminator(subject_repr)
+        dist_domain_probs = self.distance_aware_discriminator(subject_repr, distances)
+
+        return {
+            'domain_probs': domain_probs,
+            'dist_domain_probs': dist_domain_probs,
         }
