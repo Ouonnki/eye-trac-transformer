@@ -133,6 +133,7 @@ class TwoByTwoSplitter:
                 train_data = {
                     'subject_id': subject_id,
                     'label': d['label'],
+                    'category': d.get('category', 2),  # 分类标签
                     'tasks': train_tasks,
                 }
                 if is_train_subject:
@@ -145,6 +146,7 @@ class TwoByTwoSplitter:
                 test_data = {
                     'subject_id': subject_id,
                     'label': d['label'],
+                    'category': d.get('category', 2),  # 分类标签
                     'tasks': test_tasks,
                 }
                 if is_train_subject:
