@@ -168,7 +168,12 @@ class LightweightGazeDataset(Dataset):
         # 根据任务类型返回不同的标签
         if self.task_type == 'classification':
             # 分类任务：类别标签需要是 0-indexed
-            label = torch.tensor(subject_data['category'] - 1, dtype=torch.long)
+            # 兼容旧数据：如果没有 category 字段，从 label 推导
+            if 'category' in subject_data:
+                label = torch.tensor(subject_data['category'] - 1, dtype=torch.long)
+            else:
+                # 假设 label 就是类别值 (1, 2, 3)
+                label = torch.tensor(int(subject_data['label']) - 1, dtype=torch.long)
         else:
             # 回归任务：使用总分
             label = torch.tensor(subject_data['label'], dtype=torch.float32)
