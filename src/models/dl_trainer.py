@@ -59,7 +59,7 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
     epochs: int = 100
-    patience: int = 15
+    patience: int = 100
     grad_clip: float = 1.0
 
     # 设备与加速
@@ -71,7 +71,7 @@ class TrainingConfig:
     pin_memory: bool = True  # 锁页内存加速
 
     # 输出
-    output_dir: str = 'outputs/dl_models'
+    output_dir: str = 'outputs/class_res'
     save_best: bool = True
 
     # 图表配置
