@@ -61,7 +61,7 @@ class CADTTrainer:
 
         # 混合精度训练
         self.use_amp = config.use_amp and torch.cuda.is_available()
-        self.scaler = torch.cuda.amp.GradScaler() if self.use_amp else None
+        self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
         if self.use_amp:
             logger.info('启用混合精度训练 (AMP)')
 
@@ -196,7 +196,7 @@ class CADTTrainer:
 
             # 混合精度前向传播
             if self.use_amp:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     losses = self.model.train_step(
                         source_batch, target_batch,
                         device=self.device,
@@ -292,7 +292,7 @@ class CADTTrainer:
 
             # 混合精度前向传播
             if self.use_amp:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     losses = self.model.train_step(
                         source_batch, target_batch,
                         device=self.device,

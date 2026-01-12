@@ -55,7 +55,8 @@ class Discriminator(nn.Module):
     """
     域辨别器
 
-    三层 MLP + Sigmoid，用于区分源域和目标域样本。
+    三层 MLP，用于区分源域和目标域样本。
+    输出 logits（不含 Sigmoid），配合 BCEWithLogitsLoss 使用以支持 AMP。
     """
 
     def __init__(self, input_size: int, hidden_size: int = 64):
@@ -73,7 +74,7 @@ class Discriminator(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU(0.01, inplace=True),
             nn.Linear(hidden_size, 1),
-            nn.Sigmoid(),
+            # 移除 Sigmoid，配合 BCEWithLogitsLoss 使用
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -84,7 +85,7 @@ class Discriminator(nn.Module):
             x: (batch, input_size) 输入特征
 
         Returns:
-            (batch, 1) 域预测概率（0=源域，1=目标域）
+            (batch, 1) 域预测 logits（0=源域，1=目标域）
         """
         return self.model(x)
 
@@ -284,7 +285,7 @@ class CADTTransformerModel(nn.Module):
         # 损失函数
         self.ce_loss = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss(reduction='mean')
-        self.bce_loss = nn.BCELoss()
+        self.bce_loss = nn.BCEWithLogitsLoss()  # 使用 BCEWithLogitsLoss 以支持 AMP
 
         # 类别原型中心（在 init_center_c 中初始化）
         self.c = None  # shape: (num_classes, feature_dim)
