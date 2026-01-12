@@ -122,14 +122,18 @@ class CADTConfig(TrainingConfig):
                 use_gradient_checkpointing=True,
             )
 
-        # CADT 特有配置
-        config.target_domain = os.environ.get('TARGET_DOMAIN', 'test1')
-        config.cadt_kl_weight = float(os.environ.get('KL_WEIGHT', '1.0'))
-        config.cadt_dis_weight = float(os.environ.get('DIS_WEIGHT', '1.0'))
-        config.pre_train_epochs = int(os.environ.get('PRE_TRAIN_EPOCHS', '20'))
+        # CADT 特有配置（优先使用环境变量，否则使用类定义的默认值）
+        config.target_domain = os.environ.get('TARGET_DOMAIN', config.target_domain)
+        if 'KL_WEIGHT' in os.environ:
+            config.cadt_kl_weight = float(os.environ['KL_WEIGHT'])
+        if 'DIS_WEIGHT' in os.environ:
+            config.cadt_dis_weight = float(os.environ['DIS_WEIGHT'])
+        if 'PRE_TRAIN_EPOCHS' in os.environ:
+            config.pre_train_epochs = int(os.environ['PRE_TRAIN_EPOCHS'])
 
         # 任务类型
-        config.task_type = os.environ.get('TASK_TYPE', 'classification')
+        if 'TASK_TYPE' in os.environ:
+            config.task_type = os.environ['TASK_TYPE']
 
         return config
 
