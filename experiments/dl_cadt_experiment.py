@@ -180,9 +180,12 @@ class LightweightGazeDataset(Dataset):
         segment_mask = np.zeros((max_tasks, max_segments), dtype=bool)
         task_mask = np.zeros(max_tasks, dtype=bool)
         segment_lengths = np.zeros((max_tasks, max_segments), dtype=np.int64)
+        task_lengths = np.zeros(max_tasks, dtype=np.int64)  # 每个任务的有效片段数
 
         for t_idx, task in enumerate(subject_data['tasks'][:max_tasks]):
             task_mask[t_idx] = True
+            num_segments = min(len(task['segments']), max_segments)
+            task_lengths[t_idx] = num_segments
 
             for s_idx, seg_features in enumerate(task['segments'][:max_segments]):
                 segment_mask[t_idx, s_idx] = True
@@ -204,6 +207,7 @@ class LightweightGazeDataset(Dataset):
             'segment_mask': torch.from_numpy(segment_mask),
             'task_mask': torch.from_numpy(task_mask),
             'segment_lengths': torch.from_numpy(segment_lengths),
+            'task_lengths': torch.from_numpy(task_lengths),
             'label': torch.tensor(label, dtype=torch.long if self.task_type == 'classification' else torch.float32),
         }
 
