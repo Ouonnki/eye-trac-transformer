@@ -750,10 +750,6 @@ def main():
     # 任务类型: 'classification' 或 'regression'
     TASK_TYPE = os.environ.get('TASK_TYPE', 'classification')
 
-    # 生成带时间戳的输出目录
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(base_output_dir, f'{TASK_TYPE}_{MODEL_MODE}_{timestamp}')
-
     if MODEL_MODE == 'full':
         # 完整模型配置（需要较大显存，约24GB+）
         config = TrainingConfig(
@@ -781,7 +777,7 @@ def main():
             use_gradient_checkpointing=True,  # 启用梯度检查点节省显存
             num_workers=4,
             pin_memory=True,
-            output_dir=output_dir,
+            output_dir=base_output_dir,  # 会在后面被时间戳目录覆盖
             save_best=True,
             task_type=TASK_TYPE,
         )
@@ -812,7 +808,7 @@ def main():
             use_gradient_checkpointing=True,  # 启用梯度检查点节省显存
             num_workers=4,
             pin_memory=True,
-            output_dir=output_dir,
+            output_dir=base_output_dir,  # 会在后面被时间戳目录覆盖
             save_best=True,
             task_type=TASK_TYPE,
         )
@@ -843,7 +839,7 @@ def main():
             use_gradient_checkpointing=False,  # 轻量配置无需梯度检查点
             num_workers=2,
             pin_memory=True,
-            output_dir=output_dir,
+            output_dir=base_output_dir,  # 会在后面被时间戳目录覆盖
             save_best=True,
             task_type=TASK_TYPE,
         )
@@ -854,7 +850,7 @@ def main():
     print(f'Task Type: {TASK_TYPE}')
     print(f'{"="*50}')
     print(f'Processed Data: {processed_data_path}')
-    print(f'Output Dir: {output_dir}')
+    print(f'Base Output Dir: {base_output_dir}')
     print(f'Batch Size: {config.batch_size}')
     print(f'Max Tasks: {config.max_tasks}, Max Segments: {config.max_segments}')
     print(f'Max Seq Len: {config.max_seq_len}')
@@ -898,10 +894,12 @@ def main():
     # ============================================================
     experiment_config = ExperimentConfig.from_env()
 
-    # 更新输出目录
+    # 使用实验配置的输出目录作为基础目录，生成带时间戳的子目录
     if experiment_config.output_dir:
-        output_dir = experiment_config.output_dir
-        config.output_dir = output_dir
+        base_output_dir = experiment_config.output_dir
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = os.path.join(base_output_dir, f'{TASK_TYPE}_{MODEL_MODE}_{timestamp}')
+    config.output_dir = output_dir
 
     # 更新图表配置
     config.save_figures = experiment_config.save_figures
