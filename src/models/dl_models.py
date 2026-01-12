@@ -345,6 +345,7 @@ class HierarchicalTransformerNetwork(nn.Module):
         Returns:
             字典包含：
             - prediction: (batch,) 预测分数
+            - subject_repr: (batch, task_d_model) 被试级特征表示（用于域适应）
             - segment_attention: (batch, max_tasks, max_segments) 片段注意力权重
             - task_attention: (batch, max_tasks) 任务注意力权重
         """
@@ -399,6 +400,7 @@ class HierarchicalTransformerNetwork(nn.Module):
 
         return {
             'prediction': prediction,
+            'subject_repr': subject_repr,  # 暴露中间特征，用于 CADT 域适应
             'segment_attention': segment_attentions,
             'task_attention': task_attention,
         }
