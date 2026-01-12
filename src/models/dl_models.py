@@ -253,6 +253,7 @@ class HierarchicalTransformerNetwork(nn.Module):
         max_tasks: int = 30,
         max_segments: int = 30,
         use_gradient_checkpointing: bool = False,
+        num_classes: int = 1,  # 1=回归, >1=分类
     ):
         """
         初始化
@@ -271,11 +272,13 @@ class HierarchicalTransformerNetwork(nn.Module):
             max_tasks: 最大任务数
             max_segments: 最大片段数
             use_gradient_checkpointing: 是否使用梯度检查点节省显存
+            num_classes: 输出类别数，1表示回归，>1表示分类
         """
         super().__init__()
 
         self.max_tasks = max_tasks
         self.max_segments = max_segments
+        self.num_classes = num_classes
 
         # 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
@@ -315,11 +318,12 @@ class HierarchicalTransformerNetwork(nn.Module):
         )
 
         # 预测头
+        output_dim = num_classes if num_classes > 1 else 1
         self.prediction_head = nn.Sequential(
             nn.Linear(task_d_model, task_d_model // 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(task_d_model // 2, 1),
+            nn.Linear(task_d_model // 2, output_dim),
         )
 
     def forward(
@@ -388,8 +392,10 @@ class HierarchicalTransformerNetwork(nn.Module):
         # subject_repr: (batch, task_d_model)
         # task_attention: (batch, tasks)
 
-        # 5. 预测分数
-        prediction = self.prediction_head(subject_repr).squeeze(-1)  # (batch,)
+        # 5. 预测分数/类别
+        prediction = self.prediction_head(subject_repr)  # (batch, output_dim)
+        if self.num_classes == 1:
+            prediction = prediction.squeeze(-1)  # 回归任务: (batch,)
 
         return {
             'prediction': prediction,

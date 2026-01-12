@@ -133,6 +133,7 @@ def process_single_subject(
         subject_data = {
             'subject_id': subject.subject_id,
             'label': float(subject.total_score),
+            'category': int(subject.category),  # 分类标签 (1/2/3)
             'tasks': []
         }
 
