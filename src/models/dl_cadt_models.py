@@ -10,6 +10,7 @@ from typing import Optional, Dict, Tuple
 
 import torch
 import torch.nn as nn
+from torch.autograd import Function
 
 from src.models.dl_models import (
     HierarchicalTransformerNetwork,
@@ -17,6 +18,43 @@ from src.models.dl_models import (
     TaskTransformerEncoder,
 )
 from src.models.attention import AttentionPooling
+
+
+class GradientReversalFunction(Function):
+    """
+    梯度反转函数
+
+    前向传播时不改变输入，反向传播时将梯度乘以 -lambda。
+    用于域对抗训练，使编码器学习域不变特征。
+    """
+
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output.neg() * ctx.lambda_, None
+
+
+class GradientReversalLayer(nn.Module):
+    """
+    梯度反转层 (GRL)
+
+    在前向传播时作为恒等映射，在反向传播时反转梯度。
+    这使得编码器学习欺骗辨别器的特征表示。
+    """
+
+    def __init__(self, lambda_: float = 1.0):
+        super().__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_)
+
+    def set_lambda(self, lambda_: float):
+        self.lambda_ = lambda_
 
 
 class Classifier(nn.Module):
@@ -275,8 +313,8 @@ class CADTTransformerModel(nn.Module):
         # 分类器
         self.classifier = Classifier(self.feature_dim, self.num_classes)
 
-        # 双辨别器
-        # discriminator: 输入 (特征 + 到各类原型的最小距离)
+        # 双辨别器（与原始 CADT 一致）
+        # discriminator: 输入 (特征 + 到各类原型的最小距离)，用于对抗训练
         self.discriminator = Discriminator(self.feature_dim + 1, hidden_size=64)
         # discriminator2: 输入纯特征
         self.discriminator2 = Discriminator(self.feature_dim, hidden_size=64)
@@ -442,29 +480,33 @@ class CADTTransformerModel(nn.Module):
         src_features, _ = self.encoder(src_segments, src_segment_mask, src_task_mask, src_segment_lengths)
         tgt_features, _ = self.encoder(tgt_segments, tgt_segment_mask, tgt_task_mask, tgt_segment_lengths)
 
-        # 预训练阶段：只使用分类损失 + 域对抗损失
+        # 预训练阶段：只使用分类损失 + 域分类损失（discriminator2）
+        # 注意：原始 CADT 中 discriminator2 不使用对抗训练，直接学习域分类
         if change_center:
             # 分类损失
             src_pred = self.classifier(src_features)
             ce_loss = self.ce_loss(src_pred, src_labels)
 
-            # 域对抗损失（使用 discriminator2，纯特征）
-            src_real_label = torch.zeros(batch_size_src, 1, device=device)
-            tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)
+            # 域分类损失（discriminator2，非对抗）
+            # 源域=0, 目标域=1
+            src_label = torch.zeros(batch_size_src, 1, device=device)
+            tgt_label = torch.ones(batch_size_tgt, 1, device=device)
 
-            domain_loss = self.bce_loss(self.discriminator2(src_features), src_real_label) + \
-                          self.bce_loss(self.discriminator2(tgt_features), tgt_fake_label)
+            domain_loss = self.bce_loss(self.discriminator2(src_features), src_label) + \
+                          self.bce_loss(self.discriminator2(tgt_features), tgt_label)
 
-            total_loss = ce_loss + domain_loss
+            total_loss = ce_loss + domain_loss * dis_w
 
             return {
                 'total_loss': total_loss,
                 'ce_loss': ce_loss.item(),
                 'domain_loss': domain_loss.item(),
                 'kl_loss': 0.0,
+                'dis_loss': 0.0,
+                'need_discriminator_step': False,  # 预训练阶段不需要单独更新 discriminator
             }
 
-        # 正式训练阶段：完整损失
+        # 正式训练阶段：完整损失 + 两阶段更新（与原始 CADT 一致）
         # 获取原型对齐目标
         py = self.c[src_labels].detach()  # (batch, feature_dim)
 
@@ -479,34 +521,48 @@ class CADTTransformerModel(nn.Module):
         src_pred = self.classifier(src_features)
         ce_loss = self.ce_loss(src_pred, src_labels)
 
-        # 域对抗损失（discriminator: 特征 + 距离）
-        # 源域标签为1（fake），目标域标签为0（real）- 对抗训练让编码器混淆辨别器
-        src_fake_label = torch.ones(batch_size_src, 1, device=device)
-        tgt_real_label = torch.zeros(batch_size_tgt, 1, device=device)
+        # === 第一阶段：对抗损失（用翻转标签训练 encoder 欺骗 discriminator）===
+        # 原始 CADT: target 标记为 source (0), source 标记为 target (1)
+        # 这让 encoder 学习生成让 discriminator 混淆的特征
+        src_fake_label = torch.ones(batch_size_src, 1, device=device)   # source 伪装成 target
+        tgt_real_label = torch.zeros(batch_size_tgt, 1, device=device)  # target 伪装成 source
 
-        dis_loss = self.bce_loss(
+        dis_loss_adv = self.bce_loss(
             self.discriminator(torch.cat([src_features, src_dist], dim=1)), src_fake_label
         ) + self.bce_loss(
             self.discriminator(torch.cat([tgt_features, tgt_dist], dim=1)), tgt_real_label
         )
 
-        # 域对抗损失（discriminator2: 纯特征）
-        # 源域标签为0（real），目标域标签为1（fake）- 标准域对抗
-        src_real_label = torch.zeros(batch_size_src, 1, device=device)
-        tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)
+        # 域分类损失（discriminator2，非对抗，直接训练）
+        src_label = torch.zeros(batch_size_src, 1, device=device)
+        tgt_label = torch.ones(batch_size_tgt, 1, device=device)
 
-        domain_loss = self.bce_loss(self.discriminator2(src_features), src_real_label) + \
-                      self.bce_loss(self.discriminator2(tgt_features), tgt_fake_label)
+        domain_loss = self.bce_loss(self.discriminator2(src_features), src_label) + \
+                      self.bce_loss(self.discriminator2(tgt_features), tgt_label)
 
-        # 总损失
-        total_loss = ce_loss + kl_loss * kl_w + dis_loss * dis_w + domain_loss
+        # 总损失（用于更新 encoder, classifier, discriminator2）
+        total_loss = ce_loss + kl_loss * kl_w + dis_loss_adv * dis_w + domain_loss
+
+        # === 第二阶段：单独训练 discriminator（使用 detach 和真实标签）===
+        # 这部分在 trainer 中单独处理
+        # 保存用于第二阶段的信息
+        src_real_label = torch.zeros(batch_size_src, 1, device=device)  # source 真实标签
+        tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)   # target 真实标签
+
+        dis_loss_real = self.bce_loss(
+            self.discriminator(torch.cat([src_features.detach(), src_dist.detach()], dim=1)), src_real_label
+        ) + self.bce_loss(
+            self.discriminator(torch.cat([tgt_features.detach(), tgt_dist.detach()], dim=1)), tgt_fake_label
+        )
 
         return {
             'total_loss': total_loss,
             'ce_loss': ce_loss.item(),
             'kl_loss': kl_loss.item(),
-            'dis_loss': dis_loss.item(),
+            'dis_loss': dis_loss_adv.item(),
             'domain_loss': domain_loss.item(),
+            'need_discriminator_step': True,  # 需要单独更新 discriminator
+            'dis_loss_for_discriminator': dis_loss_real,  # 用于单独更新 discriminator 的损失
         }
 
     def compute_classification_loss(
