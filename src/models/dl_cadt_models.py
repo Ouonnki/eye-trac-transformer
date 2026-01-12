@@ -10,7 +10,6 @@ from typing import Optional, Dict, Tuple
 
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
 
 from src.models.dl_models import (
     HierarchicalTransformerNetwork,
@@ -450,11 +449,11 @@ class CADTTransformerModel(nn.Module):
             ce_loss = self.ce_loss(src_pred, src_labels)
 
             # 域对抗损失（使用 discriminator2，纯特征）
-            real_label = Variable(torch.zeros(batch_size_src, 1), requires_grad=False).to(device)
-            fake_label = Variable(torch.ones(batch_size_tgt, 1), requires_grad=False).to(device)
+            src_real_label = torch.zeros(batch_size_src, 1, device=device)
+            tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)
 
-            domain_loss = self.bce_loss(self.discriminator2(src_features), real_label) + \
-                          self.bce_loss(self.discriminator2(tgt_features), fake_label)
+            domain_loss = self.bce_loss(self.discriminator2(src_features), src_real_label) + \
+                          self.bce_loss(self.discriminator2(tgt_features), tgt_fake_label)
 
             total_loss = ce_loss + domain_loss
 
@@ -481,18 +480,23 @@ class CADTTransformerModel(nn.Module):
         ce_loss = self.ce_loss(src_pred, src_labels)
 
         # 域对抗损失（discriminator: 特征 + 距离）
-        real_label = Variable(torch.zeros(batch_size_src, 1), requires_grad=False).to(device)
-        fake_label = Variable(torch.ones(batch_size_tgt, 1), requires_grad=False).to(device)
+        # 源域标签为1（fake），目标域标签为0（real）- 对抗训练让编码器混淆辨别器
+        src_fake_label = torch.ones(batch_size_src, 1, device=device)
+        tgt_real_label = torch.zeros(batch_size_tgt, 1, device=device)
 
         dis_loss = self.bce_loss(
-            self.discriminator(torch.cat([src_features, src_dist], dim=1)), fake_label
+            self.discriminator(torch.cat([src_features, src_dist], dim=1)), src_fake_label
         ) + self.bce_loss(
-            self.discriminator(torch.cat([tgt_features, tgt_dist], dim=1)), real_label
+            self.discriminator(torch.cat([tgt_features, tgt_dist], dim=1)), tgt_real_label
         )
 
         # 域对抗损失（discriminator2: 纯特征）
-        domain_loss = self.bce_loss(self.discriminator2(src_features), real_label) + \
-                      self.bce_loss(self.discriminator2(tgt_features), fake_label)
+        # 源域标签为0（real），目标域标签为1（fake）- 标准域对抗
+        src_real_label = torch.zeros(batch_size_src, 1, device=device)
+        tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)
+
+        domain_loss = self.bce_loss(self.discriminator2(src_features), src_real_label) + \
+                      self.bce_loss(self.discriminator2(tgt_features), tgt_fake_label)
 
         # 总损失
         total_loss = ce_loss + kl_loss * kl_w + dis_loss * dis_w + domain_loss
