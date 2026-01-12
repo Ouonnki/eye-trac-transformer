@@ -66,7 +66,7 @@ class CADTConfig(TrainingConfig):
         model_mode = os.environ.get('MODEL_MODE', 'light')
 
         if model_mode == 'full':
-            # 完整模型配置（需要较大显存）
+            # 完整模型配置（适合 24GB 显存，如 RTX 3090）
             # CADT 需要同时处理源域和目标域，显存消耗约为普通训练的2倍
             config = cls(
                 input_dim=7,
@@ -81,9 +81,9 @@ class CADTConfig(TrainingConfig):
                 max_seq_len=100,
                 max_tasks=30,
                 max_segments=30,
-                batch_size=2,  # 小批次，通过梯度累积模拟大批次
+                batch_size=8,  # 24GB 显存可用较大批次
                 use_amp=True,  # 混合精度训练
-                use_gradient_checkpointing=True,  # 梯度检查点
+                use_gradient_checkpointing=False,  # 24GB 不需要梯度检查点
             )
         elif model_mode == 'medium':
             # 中等配置（适合24GB显存）

@@ -363,12 +363,18 @@ def main():
     config = CADTConfig.from_env()
 
     # 打印配置
+    model_mode = os.environ.get('MODEL_MODE', 'light')
     print(f'\n{"="*50}')
+    print(f'MODEL_MODE: {model_mode}')
     print(f'目标域: {config.target_domain}')
     print(f'模型维度: segment_d={config.segment_d_model}, task_d={config.task_d_model}')
+    print(f'序列配置: max_seq={config.max_seq_len}, max_tasks={config.max_tasks}, max_segments={config.max_segments}')
     print(f'CADT 参数: kl_w={config.cadt_kl_weight}, dis_w={config.cadt_dis_weight}')
     print(f'预训练 Epochs: {config.pre_train_epochs}')
     print(f'总 Epochs: {config.epochs}')
+    print(f'批次大小: {config.batch_size}')
+    print(f'混合精度: {config.use_amp}')
+    print(f'梯度检查点: {config.use_gradient_checkpointing}')
     print(f'{"="*50}')
 
     # GPU 信息
