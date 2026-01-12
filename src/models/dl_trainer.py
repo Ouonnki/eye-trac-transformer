@@ -227,15 +227,7 @@ class DeepLearningTrainer:
 
     def _compute_class_weights(self, dataset) -> torch.Tensor:
         """计算类别权重（频率倒数）用于处理类别不平衡"""
-        # 兼容旧数据：如果没有 category 字段，从 label 推导
-        labels = []
-        for d in dataset.data:
-            if 'category' in d:
-                labels.append(d['category'] - 1)  # 0-indexed
-            else:
-                # 从 label (total_score) 推导 category
-                # 假设 label 就是类别值 (1, 2, 3)
-                labels.append(int(d['label']) - 1)
+        labels = [d['category'] - 1 for d in dataset.data]  # 0-indexed
         class_counts = np.bincount(labels, minlength=self.config.num_classes)
         weights = 1.0 / (class_counts + 1e-6)
         weights = weights / weights.sum() * self.config.num_classes
