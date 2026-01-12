@@ -28,7 +28,7 @@ class CADTConfig(TrainingConfig):
     # CADT 超参数
     cadt_kl_weight: float = 1.0       # 原型聚类损失权重 (kl_loss)
     cadt_dis_weight: float = 1.0      # 域对抗损失权重 (dis_loss)
-    pre_train_epochs: int = 20        # 预训练阶段 epoch 数
+    pre_train_epochs: int = 50        # 预训练阶段 epoch 数
 
     # 数据增强
     use_augmentation: bool = True     # 是否使用数据增强
@@ -81,7 +81,7 @@ class CADTConfig(TrainingConfig):
                 max_seq_len=100,
                 max_tasks=30,
                 max_segments=30,
-                batch_size=8,  # 24GB 显存可用较大批次
+                batch_size=3,  # 24GB 显存可用较大批次
                 use_amp=True,  # 混合精度训练
                 use_gradient_checkpointing=False,  # 24GB 不需要梯度检查点
             )
