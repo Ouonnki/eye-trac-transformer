@@ -286,9 +286,11 @@ class CADTTrainer:
         for source_batch in source_loader:
             target_batch = next(target_iter)
 
-            # 清零梯度
-            for opt in self.optimizers.values():
-                opt.zero_grad(set_to_none=True)
+            # === 第一阶段：更新 encoder, classifier, discriminator2 ===
+            # 清零梯度（不包括 discriminator，因为它在第二阶段单独更新）
+            self.optimizers['encoder'].zero_grad(set_to_none=True)
+            self.optimizers['classifier'].zero_grad(set_to_none=True)
+            self.optimizers['discriminator2'].zero_grad(set_to_none=True)
 
             # 混合精度前向传播
             if self.use_amp:
@@ -301,21 +303,33 @@ class CADTTrainer:
                         dis_w=dis_w,
                     )
 
-                # 混合精度反向传播
+                # 第一阶段反向传播
                 self.scaler.scale(losses['total_loss']).backward()
 
                 # 梯度裁剪
                 if self.config.grad_clip > 0:
-                    for opt in self.optimizers.values():
-                        self.scaler.unscale_(opt)
+                    self.scaler.unscale_(self.optimizers['encoder'])
+                    self.scaler.unscale_(self.optimizers['classifier'])
+                    self.scaler.unscale_(self.optimizers['discriminator2'])
                     nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
                     nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
                     nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
 
-                # 更新参数
-                for opt in self.optimizers.values():
-                    self.scaler.step(opt)
+                # 更新 encoder, classifier, discriminator2
+                self.scaler.step(self.optimizers['encoder'])
+                self.scaler.step(self.optimizers['classifier'])
+                self.scaler.step(self.optimizers['discriminator2'])
+
+                # === 第二阶段：单独更新 discriminator（与原始 CADT 一致）===
+                if losses.get('need_discriminator_step', False):
+                    self.optimizers['discriminator'].zero_grad(set_to_none=True)
+                    dis_loss_real = losses['dis_loss_for_discriminator']
+                    self.scaler.scale(dis_loss_real).backward()
+                    if self.config.grad_clip > 0:
+                        self.scaler.unscale_(self.optimizers['discriminator'])
+                        nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
+                    self.scaler.step(self.optimizers['discriminator'])
+
                 self.scaler.update()
             else:
                 # 标准训练
@@ -327,16 +341,26 @@ class CADTTrainer:
                     dis_w=dis_w,
                 )
 
+                # 第一阶段反向传播
                 losses['total_loss'].backward()
 
                 if self.config.grad_clip > 0:
                     nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
                     nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
                     nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
 
-                for opt in self.optimizers.values():
-                    opt.step()
+                self.optimizers['encoder'].step()
+                self.optimizers['classifier'].step()
+                self.optimizers['discriminator2'].step()
+
+                # === 第二阶段：单独更新 discriminator ===
+                if losses.get('need_discriminator_step', False):
+                    self.optimizers['discriminator'].zero_grad(set_to_none=True)
+                    dis_loss_real = losses['dis_loss_for_discriminator']
+                    dis_loss_real.backward()
+                    if self.config.grad_clip > 0:
+                        nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
+                    self.optimizers['discriminator'].step()
 
             # 累计损失
             for key in total_losses:
@@ -461,9 +485,13 @@ class CADTTrainer:
         self.model.init_center_c(source_loader, self.device)
         logger.info(f'原型中心形状: {self.model.c.shape}')
 
-        # 可选：重置模型参数
-        # self.model.reset()
-        # self.optimizers = self._create_optimizers(self.model)
+        # 阶段2学习率衰减：降低学习率以稳定训练
+        phase2_lr_decay = 0.1  # 学习率衰减为原来的 10%
+        for opt_name, opt in self.optimizers.items():
+            for param_group in opt.param_groups:
+                old_lr = param_group['lr']
+                param_group['lr'] = old_lr * phase2_lr_decay
+                logger.info(f'{opt_name} 学习率: {old_lr:.2e} -> {param_group["lr"]:.2e}')
 
         # ========== 阶段2：正式训练 ==========
         logger.info('=' * 60)
@@ -471,12 +499,19 @@ class CADTTrainer:
         logger.info('=' * 60)
 
         main_epochs = self.config.epochs - self.config.pre_train_epochs
+        kl_warmup_epochs = min(20, main_epochs // 4)  # KL Loss 预热 epoch 数
         pbar = tqdm(range(main_epochs), desc='正式训练')
 
         for epoch in pbar:
+            # KL Loss 渐进式增加（前 kl_warmup_epochs 个 epoch 线性增加）
+            if epoch < kl_warmup_epochs:
+                kl_w = self.config.cadt_kl_weight * (epoch + 1) / kl_warmup_epochs
+            else:
+                kl_w = self.config.cadt_kl_weight
+
             losses = self._train_epoch_main(
                 source_loader, target_loader,
-                kl_w=self.config.cadt_kl_weight,
+                kl_w=kl_w,
                 dis_w=self.config.cadt_dis_weight,
             )
             val_metrics = self.validate(val_loader)

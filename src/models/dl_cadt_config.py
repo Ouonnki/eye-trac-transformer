@@ -26,9 +26,9 @@ class CADTConfig(TrainingConfig):
     target_domain: Literal['test1', 'test2', 'test3'] = 'test1'
 
     # CADT 超参数
-    cadt_kl_weight: float = 1.0       # 原型聚类损失权重 (kl_loss)
-    cadt_dis_weight: float = 1.0      # 域对抗损失权重 (dis_loss)
-    pre_train_epochs: int = 20        # 预训练阶段 epoch 数
+    cadt_kl_weight: float = 0.1       # 原型聚类损失权重 (kl_loss) - 降低以提高稳定性
+    cadt_dis_weight: float = 0.5      # 域对抗损失权重 (dis_loss) - 适当降低
+    pre_train_epochs: int = 50        # 预训练阶段 epoch 数
 
     # 数据增强
     use_augmentation: bool = True     # 是否使用数据增强
