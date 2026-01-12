@@ -59,6 +59,12 @@ class CADTTrainer:
         self.model: Optional[CADTTransformerModel] = None
         self.optimizers: Dict[str, AdamW] = {}
 
+        # 混合精度训练
+        self.use_amp = config.use_amp and torch.cuda.is_available()
+        self.scaler = torch.cuda.amp.GradScaler() if self.use_amp else None
+        if self.use_amp:
+            logger.info('启用混合精度训练 (AMP)')
+
         # 训练历史
         self.history = {
             'train_loss': [],
@@ -165,7 +171,7 @@ class CADTTrainer:
         target_loader: DataLoader,
     ) -> Dict[str, float]:
         """
-        预训练阶段的 epoch
+        预训练阶段的 epoch（支持 AMP）
 
         Args:
             source_loader: 源域数据加载器
@@ -188,31 +194,52 @@ class CADTTrainer:
             for opt in self.optimizers.values():
                 opt.zero_grad(set_to_none=True)
 
-            # 计算损失
-            losses = self.model.train_step(
-                source_batch, target_batch,
-                device=self.device,
-                change_center=True,
-                kl_w=0.0,
-                dis_w=self.config.cadt_dis_weight,
-            )
-
-            # 反向传播
-            losses['total_loss'].backward()
-
-            # 梯度裁剪
-            if self.config.grad_clip > 0:
-                for opt_name in ['encoder', 'classifier', 'discriminator2']:
-                    nn.utils.clip_grad_norm_(
-                        self.model.encoder.parameters() if opt_name == 'encoder'
-                        else self.model.classifier.parameters() if opt_name == 'classifier'
-                        else self.model.discriminator2.parameters(),
-                        max_norm=self.config.grad_clip
+            # 混合精度前向传播
+            if self.use_amp:
+                with torch.cuda.amp.autocast():
+                    losses = self.model.train_step(
+                        source_batch, target_batch,
+                        device=self.device,
+                        change_center=True,
+                        kl_w=0.0,
+                        dis_w=self.config.cadt_dis_weight,
                     )
 
-            # 更新参数
-            for opt_name in ['encoder', 'classifier', 'discriminator2']:
-                self.optimizers[opt_name].step()
+                # 混合精度反向传播
+                self.scaler.scale(losses['total_loss']).backward()
+
+                # 梯度裁剪
+                if self.config.grad_clip > 0:
+                    self.scaler.unscale_(self.optimizers['encoder'])
+                    self.scaler.unscale_(self.optimizers['classifier'])
+                    self.scaler.unscale_(self.optimizers['discriminator2'])
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+
+                # 更新参数
+                for opt_name in ['encoder', 'classifier', 'discriminator2']:
+                    self.scaler.step(self.optimizers[opt_name])
+                self.scaler.update()
+            else:
+                # 标准训练
+                losses = self.model.train_step(
+                    source_batch, target_batch,
+                    device=self.device,
+                    change_center=True,
+                    kl_w=0.0,
+                    dis_w=self.config.cadt_dis_weight,
+                )
+
+                losses['total_loss'].backward()
+
+                if self.config.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+
+                for opt_name in ['encoder', 'classifier', 'discriminator2']:
+                    self.optimizers[opt_name].step()
 
             # 累计损失
             for key in total_losses:
@@ -235,7 +262,7 @@ class CADTTrainer:
         dis_w: float,
     ) -> Dict[str, float]:
         """
-        正式训练阶段的 epoch
+        正式训练阶段的 epoch（支持 AMP）
 
         Args:
             source_loader: 源域数据加载器
@@ -263,31 +290,53 @@ class CADTTrainer:
             for opt in self.optimizers.values():
                 opt.zero_grad(set_to_none=True)
 
-            # 计算损失
-            losses = self.model.train_step(
-                source_batch, target_batch,
-                device=self.device,
-                change_center=False,
-                kl_w=kl_w,
-                dis_w=dis_w,
-            )
+            # 混合精度前向传播
+            if self.use_amp:
+                with torch.cuda.amp.autocast():
+                    losses = self.model.train_step(
+                        source_batch, target_batch,
+                        device=self.device,
+                        change_center=False,
+                        kl_w=kl_w,
+                        dis_w=dis_w,
+                    )
 
-            # 反向传播
-            losses['total_loss'].backward()
+                # 混合精度反向传播
+                self.scaler.scale(losses['total_loss']).backward()
 
-            # 梯度裁剪
-            if self.config.grad_clip > 0:
-                for name, params in [
-                    ('encoder', self.model.encoder.parameters()),
-                    ('classifier', self.model.classifier.parameters()),
-                    ('discriminator', self.model.discriminator.parameters()),
-                    ('discriminator2', self.model.discriminator2.parameters()),
-                ]:
-                    nn.utils.clip_grad_norm_(params, max_norm=self.config.grad_clip)
+                # 梯度裁剪
+                if self.config.grad_clip > 0:
+                    for opt in self.optimizers.values():
+                        self.scaler.unscale_(opt)
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
 
-            # 更新参数
-            for opt in self.optimizers.values():
-                opt.step()
+                # 更新参数
+                for opt in self.optimizers.values():
+                    self.scaler.step(opt)
+                self.scaler.update()
+            else:
+                # 标准训练
+                losses = self.model.train_step(
+                    source_batch, target_batch,
+                    device=self.device,
+                    change_center=False,
+                    kl_w=kl_w,
+                    dis_w=dis_w,
+                )
+
+                losses['total_loss'].backward()
+
+                if self.config.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+
+                for opt in self.optimizers.values():
+                    opt.step()
 
             # 累计损失
             for key in total_losses:

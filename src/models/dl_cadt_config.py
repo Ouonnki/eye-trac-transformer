@@ -66,7 +66,8 @@ class CADTConfig(TrainingConfig):
         model_mode = os.environ.get('MODEL_MODE', 'light')
 
         if model_mode == 'full':
-            # 完整模型配置（需要较大显存，约24GB+）
+            # 完整模型配置（需要较大显存）
+            # CADT 需要同时处理源域和目标域，显存消耗约为普通训练的2倍
             config = cls(
                 input_dim=7,
                 segment_d_model=128,
@@ -80,10 +81,12 @@ class CADTConfig(TrainingConfig):
                 max_seq_len=100,
                 max_tasks=30,
                 max_segments=30,
-                batch_size=16,
+                batch_size=2,  # 小批次，通过梯度累积模拟大批次
+                use_amp=True,  # 混合精度训练
+                use_gradient_checkpointing=True,  # 梯度检查点
             )
-        else:
-            # 轻量级配置（适合8GB显存）
+        elif model_mode == 'medium':
+            # 中等配置（适合24GB显存）
             config = cls(
                 input_dim=7,
                 segment_d_model=64,
@@ -97,7 +100,26 @@ class CADTConfig(TrainingConfig):
                 max_seq_len=100,
                 max_tasks=30,
                 max_segments=30,
-                batch_size=8,
+                batch_size=4,
+                use_gradient_checkpointing=True,
+            )
+        else:
+            # 轻量级配置（适合8-16GB显存）
+            config = cls(
+                input_dim=7,
+                segment_d_model=32,
+                segment_nhead=4,
+                segment_num_layers=2,
+                task_d_model=64,
+                task_nhead=4,
+                task_num_layers=2,
+                attention_dim=16,
+                dropout=0.1,
+                max_seq_len=50,
+                max_tasks=20,
+                max_segments=20,
+                batch_size=2,
+                use_gradient_checkpointing=True,
             )
 
         # CADT 特有配置
