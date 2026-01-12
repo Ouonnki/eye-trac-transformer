@@ -738,7 +738,7 @@ def main():
     # 路径配置
     # ============================================================
     processed_data_path = 'data/processed/processed_data.pkl'  # 预处理数据路径
-    output_dir = 'outputs/dl_models'
+    base_output_dir = 'outputs/dl_models'  # 基础输出目录
 
     # ============================================================
     # 训练配置
@@ -746,6 +746,13 @@ def main():
     # 选择配置模式: 'full' (完整模型), 'medium' (中等), 'light' (轻量)
     # 如果显存不足，从 full -> medium -> light 依次尝试
     MODEL_MODE = os.environ.get('MODEL_MODE', 'full')
+
+    # 任务类型: 'classification' 或 'regression'
+    TASK_TYPE = os.environ.get('TASK_TYPE', 'classification')
+
+    # 生成带时间戳的输出目录
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = os.path.join(base_output_dir, f'{TASK_TYPE}_{MODEL_MODE}_{timestamp}')
 
     if MODEL_MODE == 'full':
         # 完整模型配置（需要较大显存，约24GB+）
@@ -776,6 +783,7 @@ def main():
             pin_memory=True,
             output_dir=output_dir,
             save_best=True,
+            task_type=TASK_TYPE,
         )
     elif MODEL_MODE == 'medium':
         # 中等配置（适合RTX 3090 24GB）
@@ -806,6 +814,7 @@ def main():
             pin_memory=True,
             output_dir=output_dir,
             save_best=True,
+            task_type=TASK_TYPE,
         )
     else:  # 'light'
         # 轻量配置（显存不足时的备选方案）
@@ -836,11 +845,13 @@ def main():
             pin_memory=True,
             output_dir=output_dir,
             save_best=True,
+            task_type=TASK_TYPE,
         )
 
     # 打印配置
     print(f'\n{"="*50}')
     print(f'Configuration Mode: {MODEL_MODE}')
+    print(f'Task Type: {TASK_TYPE}')
     print(f'{"="*50}')
     print(f'Processed Data: {processed_data_path}')
     print(f'Output Dir: {output_dir}')
