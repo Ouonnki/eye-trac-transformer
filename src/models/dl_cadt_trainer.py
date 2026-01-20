@@ -202,7 +202,7 @@ class CADTTrainer:
                         device=self.device,
                         change_center=True,
                         kl_w=0.0,
-                        dis_w=self.config.cadt_dis_weight,
+                        dis_w=self.config.pre_train_dis_weight,  # 使用预训练阶段专用权重
                     )
 
                 # 混合精度反向传播
@@ -485,13 +485,25 @@ class CADTTrainer:
         self.model.init_center_c(source_loader, self.device)
         logger.info(f'原型中心形状: {self.model.c.shape}')
 
-        # 阶段2学习率衰减：降低学习率以稳定训练
-        phase2_lr_decay = 0.1  # 学习率衰减为原来的 10%
-        for opt_name, opt in self.optimizers.items():
-            for param_group in opt.param_groups:
-                old_lr = param_group['lr']
-                param_group['lr'] = old_lr * phase2_lr_decay
-                logger.info(f'{opt_name} 学习率: {old_lr:.2e} -> {param_group["lr"]:.2e}')
+        # 根据配置执行重置
+        if self.config.reset_mode == 'full':
+            # 完全重置：重建网络和优化器（原始 CADT 行为）
+            self.model.reset()
+            self.optimizers = self._create_optimizers(self.model)
+            logger.info('网络和优化器已完全重置')
+        elif self.config.reset_mode == 'optimizer':
+            # 仅重置优化器（推荐：保留 Transformer 预训练权重）
+            self.optimizers = self._create_optimizers(self.model)
+            logger.info('优化器已重置（保留网络权重）')
+        else:
+            # 不重置，但应用学习率衰减以稳定训练
+            logger.info('跳过重置（reset_mode=none）')
+            phase2_lr_decay = 0.1  # 学习率衰减为原来的 10%
+            for opt_name, opt in self.optimizers.items():
+                for param_group in opt.param_groups:
+                    old_lr = param_group['lr']
+                    param_group['lr'] = old_lr * phase2_lr_decay
+                    logger.info(f'{opt_name} 学习率: {old_lr:.2e} -> {param_group["lr"]:.2e}')
 
         # ========== 阶段2：正式训练 ==========
         logger.info('=' * 60)

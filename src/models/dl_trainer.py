@@ -58,7 +58,7 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
     warmup_epochs: int = 5
-    epochs: int = 100
+    epochs: int = 400
     patience: int = 100
     grad_clip: float = 1.0
 

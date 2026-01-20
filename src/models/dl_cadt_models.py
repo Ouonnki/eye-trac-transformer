@@ -332,18 +332,30 @@ class CADTTransformerModel(nn.Module):
 
     def reset(self):
         """
-        重置模型参数
+        重置模型参数（完全重置）
 
-        在两阶段训练的中间步骤调用，重新初始化模型参数。
+        重新初始化所有网络模块的参数，包括 BatchNorm/LayerNorm 的运行统计量。
+        用于原始 CADT 的两阶段训练策略：预训练后完全重置网络。
         """
-        def reset_parameters(module):
+        def _reset_module(module):
+            """递归重置模块参数"""
+            for child in module.children():
+                _reset_module(child)
             if hasattr(module, 'reset_parameters'):
                 module.reset_parameters()
+            # 重置 BatchNorm/LayerNorm 的运行统计量
+            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)):
+                if hasattr(module, 'running_mean') and module.running_mean is not None:
+                    module.running_mean.zero_()
+                if hasattr(module, 'running_var') and module.running_var is not None:
+                    module.running_var.fill_(1)
+                if hasattr(module, 'num_batches_tracked'):
+                    module.num_batches_tracked.zero_()
 
-        self.encoder.apply(reset_parameters)
-        self.classifier.apply(reset_parameters)
-        self.discriminator.apply(reset_parameters)
-        self.discriminator2.apply(reset_parameters)
+        _reset_module(self.encoder)
+        _reset_module(self.classifier)
+        _reset_module(self.discriminator)
+        _reset_module(self.discriminator2)
 
     def init_center_c(self, source_loader, device):
         """

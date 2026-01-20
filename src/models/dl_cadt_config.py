@@ -28,7 +28,9 @@ class CADTConfig(TrainingConfig):
     # CADT 超参数
     cadt_kl_weight: float = 1.0       # 原型聚类损失权重 (kl_loss)
     cadt_dis_weight: float = 1.0      # 域对抗损失权重 (dis_loss)
-    pre_train_epochs: int = 50        # 预训练阶段 epoch 数
+    pre_train_epochs: int = 120        # 预训练阶段 epoch 数
+    pre_train_dis_weight: float = 0.1  # 预训练阶段域对抗损失权重（原始 CADT 使用 0.1）
+    reset_mode: Literal['none', 'optimizer', 'full'] = 'optimizer'  # 阶段切换重置模式
 
     # 数据增强
     use_augmentation: bool = True     # 是否使用数据增强
@@ -39,7 +41,7 @@ class CADTConfig(TrainingConfig):
     discriminator_lr: float = 1e-3    # 辨别器学习率
 
     # 输出目录（覆盖父类默认值）
-    output_dir: str = 'outputs/cadt_res'
+    output_dir: str = 'outputs/cadt_res2'
 
     def __post_init__(self):
         """初始化后处理"""
@@ -130,6 +132,12 @@ class CADTConfig(TrainingConfig):
             config.cadt_dis_weight = float(os.environ['DIS_WEIGHT'])
         if 'PRE_TRAIN_EPOCHS' in os.environ:
             config.pre_train_epochs = int(os.environ['PRE_TRAIN_EPOCHS'])
+        if 'PRE_TRAIN_DIS_WEIGHT' in os.environ:
+            config.pre_train_dis_weight = float(os.environ['PRE_TRAIN_DIS_WEIGHT'])
+        if 'RESET_MODE' in os.environ:
+            config.reset_mode = os.environ['RESET_MODE']
+        if 'EPOCHS' in os.environ:
+            config.epochs = int(os.environ['EPOCHS'])
 
         # 任务类型
         if 'TASK_TYPE' in os.environ:
@@ -150,6 +158,8 @@ class CADTConfig(TrainingConfig):
             f"  cadt_kl_weight={self.cadt_kl_weight},\n"
             f"  cadt_dis_weight={self.cadt_dis_weight},\n"
             f"  pre_train_epochs={self.pre_train_epochs},\n"
+            f"  pre_train_dis_weight={self.pre_train_dis_weight},\n"
+            f"  reset_mode={self.reset_mode},\n"
             f"  epochs={self.epochs},\n"
             f"  batch_size={self.batch_size},\n"
             f"  task_type={self.task_type},\n"
