@@ -320,7 +320,7 @@ class CADTTransformerModel(nn.Module):
         self.discriminator2 = Discriminator(self.feature_dim, hidden_size=64)
 
         # 损失函数
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=0.1)  # Label Smoothing 防止过拟合
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.bce_loss = nn.BCEWithLogitsLoss()  # 使用 BCEWithLogitsLoss 以支持 AMP
 

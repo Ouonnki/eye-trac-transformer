@@ -13,7 +13,7 @@ from itertools import cycle
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.optim import AdamW
 from sklearn.metrics import accuracy_score, f1_score
 from tqdm import tqdm
@@ -128,6 +128,35 @@ class CADTTrainer:
         }
         return optimizers
 
+    def _create_weighted_sampler(self, dataset) -> WeightedRandomSampler:
+        """
+        创建加权采样器，平衡类别分布
+
+        Args:
+            dataset: 数据集（需要包含 'label' 字段）
+
+        Returns:
+            WeightedRandomSampler 采样器
+        """
+        labels = [dataset[i]['label'].item() for i in range(len(dataset))]
+        class_counts = np.bincount(labels, minlength=self.config.num_classes)
+
+        # 逆频率加权：样本越少的类别权重越大
+        class_weights = 1.0 / (class_counts + 1e-6)
+        sample_weights = [class_weights[label] for label in labels]
+
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(dataset),
+            replacement=True
+        )
+
+        # 记录类别分布信息
+        logger.info(f'类别分布: {dict(enumerate(class_counts))}')
+        logger.info(f'采样权重: {dict(enumerate(class_weights))}')
+
+        return sampler
+
     def _create_data_loaders(
         self,
         source_dataset,
@@ -152,7 +181,11 @@ class CADTTrainer:
             'pin_memory': self.config.pin_memory and torch.cuda.is_available(),
         }
 
-        source_loader = DataLoader(source_dataset, shuffle=True, **loader_kwargs)
+        # 源域使用加权采样器平衡类别分布
+        source_sampler = self._create_weighted_sampler(source_dataset)
+        source_loader = DataLoader(source_dataset, sampler=source_sampler, **loader_kwargs)
+
+        # 目标域保持随机采样（无标签）
         target_loader = DataLoader(target_dataset, shuffle=True, **loader_kwargs)
 
         val_loader = None
