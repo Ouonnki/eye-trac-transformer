@@ -2,7 +2,8 @@
 /data/
 
 # 输出目录
-outputs/
+!outputs/
+outputs/*.pt
 *.pt
 *.pth
 

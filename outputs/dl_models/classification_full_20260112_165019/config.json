@@ -1,0 +1,12 @@
+{
+  "mode": "formal",
+  "split_type": "2x2",
+  "train_subjects": 100,
+  "train_tasks": 20,
+  "n_folds": 5,
+  "n_repeats": 5,
+  "random_seed": 42,
+  "save_figures": true,
+  "output_dir": "outputs/dl_models",
+  "experiment_name": "exp_20260112_165019"
+}

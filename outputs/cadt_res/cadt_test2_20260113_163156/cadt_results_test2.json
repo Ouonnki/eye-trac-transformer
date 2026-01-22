@@ -1,0 +1,27 @@
+{
+  "target_domain": "test2",
+  "best_metrics": {
+    "loss": 0.2090610951371491,
+    "accuracy": 0.8,
+    "f1": 0.6598440545808967,
+    "epoch": 97
+  },
+  "test_results": {
+    "test1": {
+      "loss": 0.1194387943925042,
+      "accuracy": 0.6491228070175439,
+      "f1": 0.6027676027676028
+    },
+    "test2": {
+      "loss": 0.23240728445351125,
+      "accuracy": 0.76,
+      "f1": 0.4749553770638108
+    },
+    "test3": {
+      "loss": 0.31665400587218373,
+      "accuracy": 0.7368421052631579,
+      "f1": 0.483273596176822
+    }
+  },
+  "config": "CADTConfig(\n  target_domain=test2,\n  task_d_model=256,\n  cadt_kl_weight=1.0,\n  cadt_dis_weight=1.0,\n  pre_train_epochs=50,\n  epochs=100,\n  batch_size=3,\n  task_type=classification,\n  num_classes=3,\n)"
+}
