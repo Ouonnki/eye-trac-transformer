@@ -13,7 +13,7 @@ from itertools import cycle
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from sklearn.metrics import accuracy_score, f1_score
 from tqdm import tqdm
@@ -128,34 +128,33 @@ class CADTTrainer:
         }
         return optimizers
 
-    def _create_weighted_sampler(self, dataset) -> WeightedRandomSampler:
+    def _compute_class_weights(self, dataset) -> torch.Tensor:
         """
-        创建加权采样器，平衡类别分布
+        计算类别权重（逆频率加权）
+
+        用于加权交叉熵损失，平衡类别分布。
+        与 WeightedRandomSampler 不同，加权损失是更温和的类别平衡方式，
+        不会导致少数类样本被过度重复采样而引发过拟合。
 
         Args:
             dataset: 数据集（需要包含 'label' 字段）
 
         Returns:
-            WeightedRandomSampler 采样器
+            torch.Tensor: 类别权重，形状 (num_classes,)
         """
         labels = [dataset[i]['label'].item() for i in range(len(dataset))]
         class_counts = np.bincount(labels, minlength=self.config.num_classes)
 
         # 逆频率加权：样本越少的类别权重越大
+        # 归一化使权重均值为 1，保持损失量级稳定
         class_weights = 1.0 / (class_counts + 1e-6)
-        sample_weights = [class_weights[label] for label in labels]
-
-        sampler = WeightedRandomSampler(
-            weights=sample_weights,
-            num_samples=len(dataset),
-            replacement=True
-        )
+        class_weights = class_weights / class_weights.mean()  # 归一化
 
         # 记录类别分布信息
         logger.info(f'类别分布: {dict(enumerate(class_counts))}')
-        logger.info(f'采样权重: {dict(enumerate(class_weights))}')
+        logger.info(f'类别权重: {dict(enumerate(np.round(class_weights, 3)))}')
 
-        return sampler
+        return torch.tensor(class_weights, dtype=torch.float32)
 
     def _create_data_loaders(
         self,
@@ -181,11 +180,10 @@ class CADTTrainer:
             'pin_memory': self.config.pin_memory and torch.cuda.is_available(),
         }
 
-        # 源域使用加权采样器平衡类别分布
-        source_sampler = self._create_weighted_sampler(source_dataset)
-        source_loader = DataLoader(source_dataset, sampler=source_sampler, **loader_kwargs)
+        # 源域使用普通随机采样（类别平衡通过加权损失实现）
+        source_loader = DataLoader(source_dataset, shuffle=True, **loader_kwargs)
 
-        # 目标域保持随机采样（无标签）
+        # 目标域随机采样
         target_loader = DataLoader(target_dataset, shuffle=True, **loader_kwargs)
 
         val_loader = None
@@ -475,6 +473,14 @@ class CADTTrainer:
         # 创建模型和优化器
         self.model = self._create_model()
         self.optimizers = self._create_optimizers(self.model)
+
+        # 计算类别权重并设置加权损失函数（类别平衡的核心）
+        class_weights = self._compute_class_weights(source_dataset).to(self.device)
+        self.model.ce_loss = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=0.1  # 保留 Label Smoothing 防止过拟合
+        )
+        logger.info('已设置加权交叉熵损失函数')
 
         # 创建数据加载器
         if val_dataset is None:
