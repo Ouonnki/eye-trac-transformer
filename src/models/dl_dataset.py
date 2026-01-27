@@ -419,10 +419,17 @@ class SegmentGazeDataset(Dataset):
         if seq_len > 0:
             padded[:seq_len, :] = features[:seq_len]
 
+        # 根据标签类型决定 dtype：整数用 long（分类），浮点用 float32（回归）
+        label_value = self.segment_labels[idx]
+        if isinstance(label_value, (int, np.integer)):
+            label_dtype = torch.long
+        else:
+            label_dtype = torch.float32
+
         return {
             'features': torch.from_numpy(padded),
             'length': seq_len,
-            'label': torch.tensor(self.segment_labels[idx], dtype=torch.float32),
+            'label': torch.tensor(label_value, dtype=label_dtype),
             'subject_id': self.segment_subject_ids[idx],
             'task_id': self.segment_task_ids[idx],
         }
