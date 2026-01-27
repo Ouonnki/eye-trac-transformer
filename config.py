@@ -32,17 +32,8 @@ ENTROPY_GRID_SIZE = 8
 # 目标区域容差（像素）
 TARGET_TOLERANCE = 50.0
 
-# ============ 模型参数 ============
-# XGBoost 参数
-XGBOOST_PARAMS = {
-    'n_estimators': 100,
-    'max_depth': 6,
-    'learning_rate': 0.1,
-    'random_state': 42,
-    'n_jobs': -1,
-}
-
-# 交叉验证折数
+# ============ 交叉验证配置 ============
+# 交叉验证折数（用于深度学习模型评估）
 CV_SPLITS = 5
 
 # ============ 深度学习配置 ============

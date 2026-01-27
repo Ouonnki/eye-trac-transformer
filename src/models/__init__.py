@@ -1,14 +1,70 @@
 # -*- coding: utf-8 -*-
-"""模型训练和解释模块"""
+"""深度学习模型模块"""
 
-# 延迟导入，避免依赖问题
-def __getattr__(name):
-    if name == 'ModelTrainer':
-        from .trainer import ModelTrainer
-        return ModelTrainer
-    elif name == 'SHAPExplainer':
-        from .explainer import SHAPExplainer
-        return SHAPExplainer
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# 注意力机制
+from .attention import (
+    AttentionPooling,
+    MultiHeadAttentionPooling,
+    PositionalEncoding,
+)
 
-__all__ = ['ModelTrainer', 'SHAPExplainer']
+# 深度学习数据集
+from .dl_dataset import (
+    SequenceFeatureExtractor,
+    HierarchicalGazeDataset,
+    LightweightGazeDataset,
+)
+
+# 深度学习模型
+from .dl_models import (
+    GazeTransformerEncoder,
+    TaskTransformerEncoder,
+    HierarchicalTransformerNetwork,
+    DomainAdaptiveHierarchicalNetwork,
+)
+
+# 深度学习训练器
+from .dl_trainer import (
+    DeepLearningTrainer,
+    TrainingConfig,
+    EarlyStopping,
+)
+
+# 域迁移组件
+from .domain_adaptation import (
+    GradientReversalFunction,
+    ClassCenterBank,
+    DomainDiscriminator,
+    DistanceAwareDomainDiscriminator,
+)
+
+# 域迁移训练器
+from .domain_trainer import (
+    DomainAdaptiveTrainer,
+)
+
+__all__ = [
+    # 注意力机制
+    'AttentionPooling',
+    'MultiHeadAttentionPooling',
+    'PositionalEncoding',
+    # 数据集
+    'SequenceFeatureExtractor',
+    'HierarchicalGazeDataset',
+    'LightweightGazeDataset',
+    # 模型
+    'GazeTransformerEncoder',
+    'TaskTransformerEncoder',
+    'HierarchicalTransformerNetwork',
+    'DomainAdaptiveHierarchicalNetwork',
+    # 训练器
+    'DeepLearningTrainer',
+    'TrainingConfig',
+    'EarlyStopping',
+    # 域迁移
+    'GradientReversalFunction',
+    'ClassCenterBank',
+    'DomainDiscriminator',
+    'DistanceAwareDomainDiscriminator',
+    'DomainAdaptiveTrainer',
+]

@@ -5,10 +5,8 @@ pandas>=2.0.0
 numpy>=1.24.0
 openpyxl>=3.1.0
 
-# 机器学习（XGBoost基线）
-xgboost>=2.0.0
+# 机器学习（通用工具）
 scikit-learn>=1.3.0
-shap>=0.44.0
 
 # 深度学习（Transformer模型）
 torch>=2.0.0
