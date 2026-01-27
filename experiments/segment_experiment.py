@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.models.dl_dataset import SequenceConfig, SegmentGazeDataset, segment_collate_fn
 from src.models.segment_trainer import SegmentTrainer
 from src.data.split_strategy import TwoByTwoSplitter
+from src.data.schemas import TaskConfig
 from src.config import UnifiedConfig
 
 # 配置日志
@@ -97,13 +98,19 @@ def create_segment_dataset_from_split(
                         y=float(y),
                     ))
                 segments.append(SearchSegment(
+                    segment_id=i,
+                    start_number=0,
+                    target_number=int(i % 10) + 1,
                     gaze_points=gaze_points,
-                    target_number=int(i % 10),
-                    search_time=len(segment_features) * 10,
+                    start_time=gaze_points[0].timestamp if gaze_points else pd.Timestamp('2024-01-01'),
+                    end_time=gaze_points[-1].timestamp if gaze_points else pd.Timestamp('2024-01-01'),
+                    target_position=(0.0, 0.0),
                 ))
 
             trials.append(TaskTrial(
+                subject_id=subject_dict['subject_id'],
                 task_id=task_dict['task_id'],
+                config=TaskConfig(task_id=task_dict['task_id'], grid_size=25, number_range=(1, 25)),
                 segments=segments,
             ))
 
