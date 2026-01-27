@@ -463,8 +463,11 @@ class SegmentGazeDataset(Dataset):
 
         for subject_dict in processed_data:
             subject_id = subject_dict['subject_id']
-            # 分类任务使用 category，回归任务使用 label
-            label = subject_dict.get('category', subject_dict['label'])
+            # 分类任务使用 category（1/2/3 → 转换为 0/1/2），回归任务使用 label
+            if 'category' in subject_dict:
+                label = subject_dict['category'] - 1  # 转换为 0-based 索引
+            else:
+                label = subject_dict['label']
 
             for task_dict in subject_dict['tasks']:
                 task_id = task_dict['task_id']
