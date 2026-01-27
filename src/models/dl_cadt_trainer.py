@@ -3,6 +3,7 @@
 CADT 域适应训练器模块
 
 提供 CADT-Transformer 模型的两阶段训练逻辑。
+直接使用 UnifiedConfig 进行配置。
 """
 
 import os
@@ -27,8 +28,8 @@ except ImportError:
     HAS_MATPLOTLIB = False
 
 from src.models.dl_cadt_models import CADTTransformerModel
-from src.models.dl_cadt_config import CADTConfig
-from src.models.dl_dataset import collate_fn
+from src.models.dl_dataset import SequenceConfig, collate_fn
+from src.config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,27 +41,31 @@ class CADTTrainer:
     实现两阶段训练流程：
     1. 预训练阶段：分类损失 + 域对抗损失
     2. 正式训练阶段：分类损失 + 原型聚类损失 + 域对抗损失
+
+    直接使用 UnifiedConfig 和 SequenceConfig 进行配置。
     """
 
-    def __init__(self, config: CADTConfig):
+    def __init__(self, config: UnifiedConfig, seq_config: SequenceConfig):
         """
         初始化
 
         Args:
-            config: CADT 配置对象
+            config: 统一配置对象
+            seq_config: 序列配置对象（数据属性）
         """
         self.config = config
-        self.device = torch.device(config.device)
+        self.seq_config = seq_config
+        self.device = torch.device(config.device.device)
 
         # 创建输出目录
-        os.makedirs(config.output_dir, exist_ok=True)
+        os.makedirs(config.experiment.output_dir, exist_ok=True)
 
         # 模型和优化器
         self.model: Optional[CADTTransformerModel] = None
         self.optimizers: Dict[str, AdamW] = {}
 
         # 混合精度训练
-        self.use_amp = config.use_amp and torch.cuda.is_available()
+        self.use_amp = config.device.use_amp and torch.cuda.is_available()
         self.scaler = torch.amp.GradScaler('cuda') if self.use_amp else None
         if self.use_amp:
             logger.info('启用混合精度训练 (AMP)')
@@ -79,12 +84,31 @@ class CADTTrainer:
 
         # 日志
         logger.info(f'CADTTrainer 初始化完成')
-        logger.info(f'目标域: {config.target_domain}')
+        logger.info(f'目标域: {config.cadt.target_domain}')
         logger.info(f'设备: {self.device}')
 
     def _create_model(self) -> CADTTransformerModel:
         """创建 CADT 模型"""
-        model = CADTTransformerModel(self.config)
+        # 为 CADT 创建临时的配置字典传递给模型
+        model_config = {
+            'input_dim': self.config.model.input_dim,
+            'segment_d_model': self.config.model.segment_d_model,
+            'segment_nhead': self.config.model.segment_nhead,
+            'segment_num_layers': self.config.model.segment_num_layers,
+            'task_d_model': self.config.model.task_d_model,
+            'task_nhead': self.config.model.task_nhead,
+            'task_num_layers': self.config.model.task_num_layers,
+            'attention_dim': self.config.model.attention_dim,
+            'dropout': self.config.model.dropout,
+            'max_seq_len': self.seq_config.max_seq_len,
+            'max_tasks': self.seq_config.max_tasks,
+            'max_segments': self.seq_config.max_segments,
+            'num_classes': self.config.task.num_classes,
+            'use_gradient_checkpointing': self.config.device.use_gradient_checkpointing,
+            'task_type': self.config.task.type,
+        }
+
+        model = CADTTransformerModel(model_config)
         model = model.to(self.device)
 
         # 统计参数量
@@ -107,23 +131,23 @@ class CADTTrainer:
         optimizers = {
             'encoder': AdamW(
                 model.encoder.parameters(),
-                lr=self.config.encoder_lr,
-                weight_decay=self.config.weight_decay,
+                lr=self.config.cadt.encoder_lr,
+                weight_decay=self.config.training.weight_decay,
             ),
             'classifier': AdamW(
                 model.classifier.parameters(),
-                lr=self.config.classifier_lr,
-                weight_decay=self.config.weight_decay,
+                lr=self.config.cadt.classifier_lr,
+                weight_decay=self.config.training.weight_decay,
             ),
             'discriminator': AdamW(
                 model.discriminator.parameters(),
-                lr=self.config.discriminator_lr,
-                weight_decay=self.config.weight_decay,
+                lr=self.config.cadt.discriminator_lr,
+                weight_decay=self.config.training.weight_decay,
             ),
             'discriminator2': AdamW(
                 model.discriminator2.parameters(),
-                lr=self.config.discriminator_lr,
-                weight_decay=self.config.weight_decay,
+                lr=self.config.cadt.discriminator_lr,
+                weight_decay=self.config.training.weight_decay,
             ),
         }
         return optimizers
@@ -143,7 +167,7 @@ class CADTTrainer:
             torch.Tensor: 类别权重，形状 (num_classes,)
         """
         labels = [dataset[i]['label'].item() for i in range(len(dataset))]
-        class_counts = np.bincount(labels, minlength=self.config.num_classes)
+        class_counts = np.bincount(labels, minlength=self.config.task.num_classes)
 
         # 逆频率加权：样本越少的类别权重越大
         # 归一化使权重均值为 1，保持损失量级稳定
@@ -174,10 +198,10 @@ class CADTTrainer:
             (source_loader, target_loader, val_loader)
         """
         loader_kwargs = {
-            'batch_size': self.config.batch_size,
+            'batch_size': self.config.training.batch_size,
             'collate_fn': collate_fn,
-            'num_workers': self.config.num_workers,
-            'pin_memory': self.config.pin_memory and torch.cuda.is_available(),
+            'num_workers': self.config.device.num_workers,
+            'pin_memory': self.config.device.pin_memory and torch.cuda.is_available(),
         }
 
         # 源域使用普通随机采样（类别平衡通过加权损失实现）
@@ -233,20 +257,20 @@ class CADTTrainer:
                         device=self.device,
                         change_center=True,
                         kl_w=0.0,
-                        dis_w=self.config.pre_train_dis_weight,  # 使用预训练阶段专用权重
+                        dis_w=self.config.cadt.pre_train_dis_weight,  # 使用预训练阶段专用权重
                     )
 
                 # 混合精度反向传播
                 self.scaler.scale(losses['total_loss']).backward()
 
                 # 梯度裁剪
-                if self.config.grad_clip > 0:
+                if self.config.training.grad_clip > 0:
                     self.scaler.unscale_(self.optimizers['encoder'])
                     self.scaler.unscale_(self.optimizers['classifier'])
                     self.scaler.unscale_(self.optimizers['discriminator2'])
-                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.training.grad_clip)
 
                 # 更新参数
                 for opt_name in ['encoder', 'classifier', 'discriminator2']:
@@ -259,15 +283,15 @@ class CADTTrainer:
                     device=self.device,
                     change_center=True,
                     kl_w=0.0,
-                    dis_w=self.config.cadt_dis_weight,
+                    dis_w=self.config.cadt.cadt_dis_weight,
                 )
 
                 losses['total_loss'].backward()
 
-                if self.config.grad_clip > 0:
-                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+                if self.config.training.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.training.grad_clip)
 
                 for opt_name in ['encoder', 'classifier', 'discriminator2']:
                     self.optimizers[opt_name].step()
@@ -338,13 +362,13 @@ class CADTTrainer:
                 self.scaler.scale(losses['total_loss']).backward()
 
                 # 梯度裁剪
-                if self.config.grad_clip > 0:
+                if self.config.training.grad_clip > 0:
                     self.scaler.unscale_(self.optimizers['encoder'])
                     self.scaler.unscale_(self.optimizers['classifier'])
                     self.scaler.unscale_(self.optimizers['discriminator2'])
-                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.training.grad_clip)
 
                 # 更新 encoder, classifier, discriminator2
                 self.scaler.step(self.optimizers['encoder'])
@@ -356,9 +380,9 @@ class CADTTrainer:
                     self.optimizers['discriminator'].zero_grad(set_to_none=True)
                     dis_loss_real = losses['dis_loss_for_discriminator']
                     self.scaler.scale(dis_loss_real).backward()
-                    if self.config.grad_clip > 0:
+                    if self.config.training.grad_clip > 0:
                         self.scaler.unscale_(self.optimizers['discriminator'])
-                        nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
+                        nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.training.grad_clip)
                     self.scaler.step(self.optimizers['discriminator'])
 
                 self.scaler.update()
@@ -375,10 +399,10 @@ class CADTTrainer:
                 # 第一阶段反向传播
                 losses['total_loss'].backward()
 
-                if self.config.grad_clip > 0:
-                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.grad_clip)
-                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.grad_clip)
+                if self.config.training.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.classifier.parameters(), self.config.training.grad_clip)
+                    nn.utils.clip_grad_norm_(self.model.discriminator2.parameters(), self.config.training.grad_clip)
 
                 self.optimizers['encoder'].step()
                 self.optimizers['classifier'].step()
@@ -389,8 +413,8 @@ class CADTTrainer:
                     self.optimizers['discriminator'].zero_grad(set_to_none=True)
                     dis_loss_real = losses['dis_loss_for_discriminator']
                     dis_loss_real.backward()
-                    if self.config.grad_clip > 0:
-                        nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.grad_clip)
+                    if self.config.training.grad_clip > 0:
+                        nn.utils.clip_grad_norm_(self.model.discriminator.parameters(), self.config.training.grad_clip)
                     self.optimizers['discriminator'].step()
 
             # 累计损失
@@ -497,7 +521,7 @@ class CADTTrainer:
         logger.info('阶段1：预训练（分类 + 域对抗）')
         logger.info('=' * 60)
 
-        pbar = tqdm(range(self.config.pre_train_epochs), desc='预训练')
+        pbar = tqdm(range(self.config.cadt.pre_train_epochs), desc='预训练')
         for epoch in pbar:
             losses = self._train_epoch_pretrain(source_loader, target_loader)
             val_metrics = self.validate(val_loader)
@@ -525,12 +549,12 @@ class CADTTrainer:
         logger.info(f'原型中心形状: {self.model.c.shape}')
 
         # 根据配置执行重置
-        if self.config.reset_mode == 'full':
+        if self.config.cadt.reset_mode == 'full':
             # 完全重置：重建网络和优化器（原始 CADT 行为）
             self.model.reset()
             self.optimizers = self._create_optimizers(self.model)
             logger.info('网络和优化器已完全重置')
-        elif self.config.reset_mode == 'optimizer':
+        elif self.config.cadt.reset_mode == 'optimizer':
             # 仅重置优化器（推荐：保留 Transformer 预训练权重）
             self.optimizers = self._create_optimizers(self.model)
             logger.info('优化器已重置（保留网络权重）')
@@ -549,21 +573,21 @@ class CADTTrainer:
         logger.info('阶段2：正式训练（分类 + 原型聚类 + 域对抗）')
         logger.info('=' * 60)
 
-        main_epochs = self.config.epochs - self.config.pre_train_epochs
+        main_epochs = self.config.training.epochs - self.config.cadt.pre_train_epochs
         kl_warmup_epochs = min(20, main_epochs // 4)  # KL Loss 预热 epoch 数
         pbar = tqdm(range(main_epochs), desc='正式训练')
 
         for epoch in pbar:
             # KL Loss 渐进式增加（前 kl_warmup_epochs 个 epoch 线性增加）
             if epoch < kl_warmup_epochs:
-                kl_w = self.config.cadt_kl_weight * (epoch + 1) / kl_warmup_epochs
+                kl_w = self.config.cadt.cadt_kl_weight * (epoch + 1) / kl_warmup_epochs
             else:
-                kl_w = self.config.cadt_kl_weight
+                kl_w = self.config.cadt.cadt_kl_weight
 
             losses = self._train_epoch_main(
                 source_loader, target_loader,
                 kl_w=kl_w,
-                dis_w=self.config.cadt_dis_weight,
+                dis_w=self.config.cadt.cadt_dis_weight,
             )
             val_metrics = self.validate(val_loader)
 
@@ -587,7 +611,7 @@ class CADTTrainer:
             # 保存最佳模型
             if best_metrics is None or val_metrics['accuracy'] > best_metrics['accuracy']:
                 best_metrics = val_metrics.copy()
-                best_metrics['epoch'] = self.config.pre_train_epochs + epoch + 1
+                best_metrics['epoch'] = self.config.cadt.pre_train_epochs + epoch + 1
                 best_model_state = self.model.state_dict().copy()
 
         # 恢复最佳模型
@@ -609,8 +633,8 @@ class CADTTrainer:
     def _save_model(self, metrics: Dict[str, float]):
         """保存模型"""
         model_path = os.path.join(
-            self.config.output_dir,
-            f'cadt_model_{self.config.target_domain}.pt'
+            self.config.experiment.output_dir,
+            f'cadt_model_{self.config.cadt.target_domain}.pt'
         )
         torch.save({
             'model_state_dict': self.model.state_dict(),
@@ -626,14 +650,14 @@ class CADTTrainer:
             return
 
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        fig.suptitle(f'CADT 训练曲线 (目标域: {self.config.target_domain})', fontsize=14)
+        fig.suptitle(f'CADT 训练曲线 (目标域: {self.config.cadt.target_domain})', fontsize=14)
 
         epochs = range(1, len(self.history['train_loss']) + 1)
 
         # Loss
         axes[0, 0].plot(epochs, self.history['train_loss'], 'b-', label='Train Loss')
         axes[0, 0].plot(epochs, self.history['val_loss'], 'r-', label='Val Loss')
-        axes[0, 0].axvline(x=self.config.pre_train_epochs, color='g', linestyle='--', label='阶段切换')
+        axes[0, 0].axvline(x=self.config.cadt.pre_train_epochs, color='g', linestyle='--', label='阶段切换')
         axes[0, 0].set_xlabel('Epoch')
         axes[0, 0].set_ylabel('Loss')
         axes[0, 0].set_title('损失曲线')
@@ -642,7 +666,7 @@ class CADTTrainer:
 
         # Accuracy
         axes[0, 1].plot(epochs, self.history['val_accuracy'], 'g-', label='Val Accuracy')
-        axes[0, 1].axvline(x=self.config.pre_train_epochs, color='r', linestyle='--', label='阶段切换')
+        axes[0, 1].axvline(x=self.config.cadt.pre_train_epochs, color='r', linestyle='--', label='阶段切换')
         axes[0, 1].set_xlabel('Epoch')
         axes[0, 1].set_ylabel('Accuracy')
         axes[0, 1].set_title('准确率曲线')
@@ -653,7 +677,7 @@ class CADTTrainer:
         axes[1, 0].plot(epochs, self.history['ce_loss'], 'b-', label='CE Loss')
         axes[1, 0].plot(epochs, self.history['kl_loss'], 'r-', label='KL Loss')
         axes[1, 0].plot(epochs, self.history['domain_loss'], 'g-', label='Domain Loss')
-        axes[1, 0].axvline(x=self.config.pre_train_epochs, color='k', linestyle='--', label='阶段切换')
+        axes[1, 0].axvline(x=self.config.cadt.pre_train_epochs, color='k', linestyle='--', label='阶段切换')
         axes[1, 0].set_xlabel('Epoch')
         axes[1, 0].set_ylabel('Loss')
         axes[1, 0].set_title('CADT 损失分解')
@@ -662,7 +686,7 @@ class CADTTrainer:
 
         # F1 Score
         axes[1, 1].plot(epochs, self.history['val_f1'], 'm-', label='Val F1')
-        axes[1, 1].axvline(x=self.config.pre_train_epochs, color='r', linestyle='--', label='阶段切换')
+        axes[1, 1].axvline(x=self.config.cadt.pre_train_epochs, color='r', linestyle='--', label='阶段切换')
         axes[1, 1].set_xlabel('Epoch')
         axes[1, 1].set_ylabel('F1 Score')
         axes[1, 1].set_title('F1 曲线')
@@ -672,10 +696,10 @@ class CADTTrainer:
         plt.tight_layout()
 
         save_path = os.path.join(
-            self.config.output_dir,
-            f'cadt_training_curves_{self.config.target_domain}.png'
+            self.config.experiment.output_dir,
+            f'cadt_training_curves_{self.config.cadt.target_domain}.png'
         )
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.savefig(save_path, dpi=self.config.output.figure_dpi, bbox_inches='tight')
         plt.close(fig)
 
         logger.info(f'训练曲线已保存: {save_path}')
@@ -692,7 +716,7 @@ class CADTTrainer:
         """
         loader = DataLoader(
             dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=False,
             collate_fn=collate_fn,
             num_workers=0,

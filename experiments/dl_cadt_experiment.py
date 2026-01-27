@@ -6,24 +6,17 @@ CADT 域适应 Transformer 分类实验
 支持将三个测试集（test1/test2/test3）分别设置为目标域。
 
 用法：
-    # 以 test1（跨被试泛化）作为目标域训练
-    TARGET_DOMAIN=test1 python experiments/dl_cadt_experiment.py
+    # 使用默认配置文件 (configs/default.json)
+    python experiments/dl_cadt_experiment.py
 
-    # 以 test2（跨任务泛化）作为目标域训练
-    TARGET_DOMAIN=test2 python experiments/dl_cadt_experiment.py
+    # 使用自定义配置文件
+    CONFIG=configs/my_config.json python experiments/dl_cadt_experiment.py
 
-    # 以 test3（双重泛化）作为目标域训练
-    TARGET_DOMAIN=test3 python experiments/dl_cadt_experiment.py
-
-    # 调整超参数
-    TARGET_DOMAIN=test1 KL_WEIGHT=0.5 DIS_WEIGHT=2.0 python experiments/dl_cadt_experiment.py
-
-环境变量：
-    TARGET_DOMAIN: 目标域选择 (test1/test2/test3)
-    KL_WEIGHT: 原型聚类损失权重
-    DIS_WEIGHT: 域对抗损失权重
-    PRE_TRAIN_EPOCHS: 预训练阶段 epoch 数
-    MODEL_MODE: 模型配置模式 (full/light)
+配置说明：
+    在 JSON 配置文件中的 cadt.target_domain 字段设置目标域：
+    - test1: 新人旧题（跨被试泛化）
+    - test2: 旧人新题（跨任务泛化）
+    - test3: 新人新题（双重泛化）
 """
 
 import os
@@ -43,10 +36,9 @@ from torch.utils.data import Dataset
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.dl_dataset import SequenceConfig, collate_fn
-from src.models.dl_cadt_config import CADTConfig
 from src.models.dl_cadt_trainer import CADTTrainer
 from src.data.split_strategy import TwoByTwoSplitter
-from experiments.experiment_config import ExperimentConfig
+from src.config import UnifiedConfig
 
 # 配置日志
 logging.basicConfig(
@@ -225,43 +217,36 @@ def load_processed_data(path: str) -> List[Dict]:
 
 def run_cadt_experiment(
     data: List[Dict],
-    config: CADTConfig,
-    experiment_config: ExperimentConfig,
+    config: UnifiedConfig,
+    seq_config: SequenceConfig,
 ) -> Dict:
     """
     运行 CADT 域适应实验
 
     Args:
         data: 预处理后的数据
-        config: CADT 配置
-        experiment_config: 实验配置
+        config: 统一配置
+        seq_config: 序列配置
 
     Returns:
         实验结果字典
     """
     logger.info('=' * 60)
     logger.info('开始 CADT 域适应实验')
-    logger.info(f'目标域: {config.target_domain}')
+    logger.info(f'目标域: {config.cadt.target_domain}')
     logger.info('=' * 60)
 
     # 2×2 数据划分
     splitter = TwoByTwoSplitter(
-        train_subjects=experiment_config.train_subjects,
-        train_tasks=experiment_config.train_tasks,
-        random_state=experiment_config.random_seed,
+        train_subjects=config.experiment.train_subjects,
+        train_tasks=config.experiment.train_tasks,
+        random_state=config.experiment.random_seed,
     )
     splits = splitter.split(data)
 
     # 打印划分信息
     for split_name, split_data in splits.items():
         logger.info(f'{split_name}: {len(split_data)} 个被试')
-
-    # 创建序列配置
-    seq_config = SequenceConfig(
-        max_seq_len=config.max_seq_len,
-        max_tasks=config.max_tasks,
-        max_segments=config.max_segments,
-    )
 
     # 创建数据集
     source_dataset = LightweightGazeDataset(
@@ -270,13 +255,13 @@ def run_cadt_experiment(
         task_type='classification',
     )
     target_dataset = LightweightGazeDataset(
-        splits[config.target_domain], seq_config,
+        splits[config.cadt.target_domain], seq_config,
         normalizer_stats=source_dataset.stats,
         task_type='classification',
     )
 
     # 创建训练器并训练
-    trainer = CADTTrainer(config)
+    trainer = CADTTrainer(config, seq_config)
     best_metrics = trainer.train(
         source_dataset=source_dataset,
         target_dataset=target_dataset,
@@ -285,7 +270,7 @@ def run_cadt_experiment(
 
     # 评估所有测试集
     results = {
-        'target_domain': config.target_domain,
+        'target_domain': config.cadt.target_domain,
         'best_metrics': best_metrics,
         'test_results': {},
     }
@@ -320,12 +305,12 @@ def print_results(results: Dict):
     print('=' * 60)
 
 
-def save_results(results: Dict, output_dir: str, config: CADTConfig):
+def save_results(results: Dict, output_dir: str, config: UnifiedConfig):
     """保存实验结果"""
     os.makedirs(output_dir, exist_ok=True)
 
     # 保存 JSON 结果
-    results_path = os.path.join(output_dir, f'cadt_results_{config.target_domain}.json')
+    results_path = os.path.join(output_dir, f'cadt_results_{config.cadt.target_domain}.json')
 
     serializable_results = {
         'target_domain': results['target_domain'],
@@ -345,6 +330,32 @@ def save_results(results: Dict, output_dir: str, config: CADTConfig):
     logger.info(f'结果已保存: {results_path}')
 
 
+def load_cadt_config(config_path: str = None) -> tuple[UnifiedConfig, SequenceConfig]:
+    """
+    加载CADT域适应训练配置
+
+    从 JSON 文件加载配置，默认使用 configs/default.json
+
+    Args:
+        config_path: 配置文件路径
+
+    Returns:
+        (UnifiedConfig 实例, SequenceConfig 实例)
+    """
+    # 确定配置文件路径
+    if config_path is None:
+        config_path = os.environ.get('CONFIG', 'configs/default.json')
+
+    # 加载配置
+    logger.info(f'Loading config from: {config_path}')
+    config = UnifiedConfig.from_json(config_path)
+
+    # 创建序列配置（数据属性，暂时使用默认值）
+    seq_config = SequenceConfig()
+
+    return config, seq_config
+
+
 def main():
     """主函数"""
     print('=' * 70)
@@ -358,23 +369,20 @@ def main():
     base_output_dir = 'outputs/cadt_res'
 
     # ============================================================
-    # 配置
+    # 加载配置
     # ============================================================
-    config = CADTConfig.from_env()
+    config, seq_config = load_cadt_config()
 
-    # 打印配置
-    model_mode = os.environ.get('MODEL_MODE', 'light')
+    # 打印配置摘要
     print(f'\n{"="*50}')
-    print(f'MODEL_MODE: {model_mode}')
-    print(f'目标域: {config.target_domain}')
-    print(f'模型维度: segment_d={config.segment_d_model}, task_d={config.task_d_model}')
-    print(f'序列配置: max_seq={config.max_seq_len}, max_tasks={config.max_tasks}, max_segments={config.max_segments}')
-    print(f'CADT 参数: kl_w={config.cadt_kl_weight}, dis_w={config.cadt_dis_weight}')
-    print(f'预训练 Epochs: {config.pre_train_epochs}')
-    print(f'总 Epochs: {config.epochs}')
-    print(f'批次大小: {config.batch_size}')
-    print(f'混合精度: {config.use_amp}')
-    print(f'梯度检查点: {config.use_gradient_checkpointing}')
+    print(f'目标域: {config.cadt.target_domain}')
+    print(f'模型维度: segment_d={config.model.segment_d_model}, task_d={config.model.task_d_model}')
+    print(f'CADT 参数: kl_w={config.cadt.cadt_kl_weight}, dis_w={config.cadt.cadt_dis_weight}')
+    print(f'预训练 Epochs: {config.cadt.pre_train_epochs}')
+    print(f'总 Epochs: {config.training.epochs}')
+    print(f'批次大小: {config.training.batch_size}')
+    print(f'混合精度: {config.device.use_amp}')
+    print(f'梯度检查点: {config.device.use_gradient_checkpointing}')
     print(f'{"="*50}')
 
     # GPU 信息
@@ -409,18 +417,15 @@ def main():
     print(f'  任务数: {total_tasks}')
     print(f'  片段数: {total_segments}')
 
-    # 实验配置
-    experiment_config = ExperimentConfig.from_env()
-
-    # 输出目录
+    # 生成带时间戳的输出目录
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(base_output_dir, f'cadt_{config.target_domain}_{timestamp}')
-    config.output_dir = output_dir
+    output_dir = os.path.join(base_output_dir, f'cadt_{config.cadt.target_domain}_{timestamp}')
+    config.experiment.output_dir = output_dir
 
     # ============================================================
     # 运行实验
     # ============================================================
-    results = run_cadt_experiment(data, config, experiment_config)
+    results = run_cadt_experiment(data, config, seq_config)
 
     # 打印结果
     print_results(results)

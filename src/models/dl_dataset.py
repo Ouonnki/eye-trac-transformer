@@ -7,7 +7,7 @@
 
 import math
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SequenceConfig:
-    """序列配置"""
+    """序列配置（数据属性，由数据本身决定）"""
     max_seq_len: int = 100      # 每个片段最大眼动点数
     max_tasks: int = 30         # 每个被试最大任务数
     max_segments: int = 30      # 每个任务最大片段数

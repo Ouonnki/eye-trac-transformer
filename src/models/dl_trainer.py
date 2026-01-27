@@ -10,14 +10,13 @@ import os
 import logging
 import math
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, LambdaLR
+from torch.optim.lr_scheduler import LambdaLR
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, accuracy_score, f1_score
 from tqdm import tqdm
 
@@ -31,58 +30,10 @@ except ImportError:
     HAS_MATPLOTLIB = False
 
 from src.models.dl_models import HierarchicalTransformerNetwork
-from src.models.dl_dataset import HierarchicalGazeDataset, collate_fn
+from src.models.dl_dataset import HierarchicalGazeDataset, collate_fn, SequenceConfig
+from src.config import UnifiedConfig
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class TrainingConfig:
-    """训练配置"""
-    # 模型参数
-    input_dim: int = 7
-    segment_d_model: int = 64
-    segment_nhead: int = 4
-    segment_num_layers: int = 4
-    task_d_model: int = 128
-    task_nhead: int = 4
-    task_num_layers: int = 2
-    attention_dim: int = 32
-    dropout: float = 0.1
-    max_seq_len: int = 100
-    max_tasks: int = 30
-    max_segments: int = 30
-
-    # 训练参数
-    batch_size: int = 8
-    learning_rate: float = 1e-4
-    weight_decay: float = 1e-4
-    warmup_epochs: int = 5
-    epochs: int = 400
-    patience: int = 100
-    grad_clip: float = 1.0
-
-    # 设备与加速
-    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
-    use_multi_gpu: bool = True  # 多GPU并行
-    use_amp: bool = True  # 混合精度训练
-    use_gradient_checkpointing: bool = False  # 梯度检查点节省显存
-    num_workers: int = 8  # 数据加载进程数
-    pin_memory: bool = True  # 锁页内存加速
-
-    # 输出
-    output_dir: str = 'outputs/class_res'
-    save_best: bool = True
-
-    # 图表配置
-    save_figures: bool = True  # 是否保存训练曲线图
-    figure_dpi: int = 150  # 图表分辨率
-    summary_interval: int = 10  # 阶段性汇总间隔（每N个epoch）
-
-    # 任务类型配置
-    task_type: str = 'classification'  # 'regression' 或 'classification'
-    num_classes: int = 3  # 分类任务的类别数
-    use_class_weights: bool = True  # 是否使用类别权重处理不平衡
 
 
 class EarlyStopping:
@@ -168,24 +119,28 @@ class DeepLearningTrainer:
 
     负责模型的训练、验证、保存和加载。
     支持多GPU并行和混合精度训练。
+
+    直接使用 UnifiedConfig 进行配置。
     """
 
-    def __init__(self, config: TrainingConfig):
+    def __init__(self, config: UnifiedConfig, seq_config: SequenceConfig):
         """
         初始化
 
         Args:
-            config: 训练配置
+            config: 统一配置对象
+            seq_config: 序列配置对象（数据属性）
         """
         self.config = config
-        self.device = torch.device(config.device)
+        self.seq_config = seq_config
+        self.device = torch.device(config.device.device)
 
         # 创建输出目录
-        os.makedirs(config.output_dir, exist_ok=True)
+        os.makedirs(config.experiment.output_dir, exist_ok=True)
 
         # 检查GPU数量
         self.n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        if self.n_gpus > 1 and config.use_multi_gpu:
+        if self.n_gpus > 1 and config.device.use_multi_gpu:
             logger.info(f'Using {self.n_gpus} GPUs for training')
         elif self.n_gpus == 1:
             logger.info(f'Using single GPU: {torch.cuda.get_device_name(0)}')
@@ -193,7 +148,7 @@ class DeepLearningTrainer:
             logger.info('Using CPU for training')
 
         # 混合精度训练
-        self.use_amp = config.use_amp and torch.cuda.is_available()
+        self.use_amp = config.device.use_amp and torch.cuda.is_available()
         self.scaler = torch.cuda.amp.GradScaler() if self.use_amp else None
         if self.use_amp:
             logger.info('Using Automatic Mixed Precision (AMP)')
@@ -208,7 +163,7 @@ class DeepLearningTrainer:
 
     def _init_history(self) -> None:
         """根据任务类型初始化训练历史"""
-        if self.config.task_type == 'classification':
+        if self.config.task.type == 'classification':
             self.history = {
                 'train_loss': [],
                 'val_loss': [],
@@ -228,40 +183,40 @@ class DeepLearningTrainer:
     def _compute_class_weights(self, dataset) -> torch.Tensor:
         """计算类别权重（频率倒数）用于处理类别不平衡"""
         labels = [d['category'] - 1 for d in dataset.data]  # 0-indexed
-        class_counts = np.bincount(labels, minlength=self.config.num_classes)
+        class_counts = np.bincount(labels, minlength=self.config.task.num_classes)
         weights = 1.0 / (class_counts + 1e-6)
-        weights = weights / weights.sum() * self.config.num_classes
+        weights = weights / weights.sum() * self.config.task.num_classes
         logger.info(f'类别权重: {weights}')
         return torch.tensor(weights, dtype=torch.float32, device=self.device)
 
     def _create_model(self) -> nn.Module:
         """创建模型（支持多GPU和梯度检查点）"""
         # 确定输出类别数
-        num_classes = self.config.num_classes if self.config.task_type == 'classification' else 1
+        num_classes = self.config.task.num_classes if self.config.task.type == 'classification' else 1
 
         model = HierarchicalTransformerNetwork(
-            input_dim=self.config.input_dim,
-            segment_d_model=self.config.segment_d_model,
-            segment_nhead=self.config.segment_nhead,
-            segment_num_layers=self.config.segment_num_layers,
-            task_d_model=self.config.task_d_model,
-            task_nhead=self.config.task_nhead,
-            task_num_layers=self.config.task_num_layers,
-            attention_dim=self.config.attention_dim,
-            dropout=self.config.dropout,
-            max_seq_len=self.config.max_seq_len,
-            max_tasks=self.config.max_tasks,
-            max_segments=self.config.max_segments,
-            use_gradient_checkpointing=self.config.use_gradient_checkpointing,
+            input_dim=self.config.model.input_dim,
+            segment_d_model=self.config.model.segment_d_model,
+            segment_nhead=self.config.model.segment_nhead,
+            segment_num_layers=self.config.model.segment_num_layers,
+            task_d_model=self.config.model.task_d_model,
+            task_nhead=self.config.model.task_nhead,
+            task_num_layers=self.config.model.task_num_layers,
+            attention_dim=self.config.model.attention_dim,
+            dropout=self.config.model.dropout,
+            max_seq_len=self.seq_config.max_seq_len,
+            max_tasks=self.seq_config.max_tasks,
+            max_segments=self.seq_config.max_segments,
+            use_gradient_checkpointing=self.config.device.use_gradient_checkpointing,
             num_classes=num_classes,
         )
         model = model.to(self.device)
 
-        if self.config.use_gradient_checkpointing:
+        if self.config.device.use_gradient_checkpointing:
             logger.info('Using Gradient Checkpointing to save memory')
 
         # 多GPU并行
-        if self.n_gpus > 1 and self.config.use_multi_gpu:
+        if self.n_gpus > 1 and self.config.device.use_multi_gpu:
             model = nn.DataParallel(model)
             logger.info(f'Model wrapped with DataParallel on {self.n_gpus} GPUs')
 
@@ -271,13 +226,13 @@ class DeepLearningTrainer:
         """创建优化器和调度器"""
         optimizer = AdamW(
             model.parameters(),
-            lr=self.config.learning_rate,
-            weight_decay=self.config.weight_decay,
+            lr=self.config.training.learning_rate,
+            weight_decay=self.config.training.weight_decay,
         )
         scheduler = get_warmup_scheduler(
             optimizer,
-            self.config.warmup_epochs,
-            self.config.epochs,
+            self.config.training.warmup_epochs,
+            self.config.training.epochs,
         )
         return optimizer, scheduler
 
@@ -311,7 +266,7 @@ class DeepLearningTrainer:
 
         # 创建 2×2 子图
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        task_type_label = '分类' if self.config.task_type == 'classification' else '回归'
+        task_type_label = '分类' if self.config.task.type == 'classification' else '回归'
         fig.suptitle(f'训练曲线 (Fold {fold + 1}) - {task_type_label}任务', fontsize=14, fontweight='bold')
 
         epochs = range(1, len(self.history['train_loss']) + 1)
@@ -321,7 +276,7 @@ class DeepLearningTrainer:
         ax1.plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', linewidth=2)
         ax1.plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', linewidth=2)
         ax1.set_xlabel('Epoch')
-        loss_label = 'Loss (CE)' if self.config.task_type == 'classification' else 'Loss (MSE)'
+        loss_label = 'Loss (CE)' if self.config.task.type == 'classification' else 'Loss (MSE)'
         ax1.set_ylabel(loss_label)
         ax1.set_title('Loss 曲线')
         ax1.legend()
@@ -333,7 +288,7 @@ class DeepLearningTrainer:
         ax1.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best @ {best_epoch}')
         ax1.scatter([best_epoch], [best_val_loss], color='g', s=100, zorder=5)
 
-        if self.config.task_type == 'classification':
+        if self.config.task.type == 'classification':
             # 子图2: Accuracy 曲线
             ax2 = axes[0, 1]
             ax2.plot(epochs, self.history['val_accuracy'], 'g-', label='Val Accuracy', linewidth=2)
@@ -416,9 +371,9 @@ class DeepLearningTrainer:
 
         # 保存图片
         if save_path is None:
-            save_path = os.path.join(self.config.output_dir, f'training_curves_fold{fold}.png')
+            save_path = os.path.join(self.config.experiment.output_dir, f'training_curves_fold{fold}.png')
 
-        plt.savefig(save_path, dpi=self.config.figure_dpi, bbox_inches='tight')
+        plt.savefig(save_path, dpi=self.config.output.figure_dpi, bbox_inches='tight')
         plt.close(fig)
 
         logger.info(f'训练曲线已保存: {save_path}')
@@ -461,7 +416,7 @@ class DeepLearningTrainer:
         print(f'║  Val Loss:   {initial_val_loss:.4f} → {current_val_loss:.4f} ({val_arrow}{abs(val_change):.1f}%)' +
               ' ' * (60 - 45 - len(f'{abs(val_change):.1f}')) + '║')
 
-        if self.config.task_type == 'classification':
+        if self.config.task.type == 'classification':
             current_val_acc = self.history['val_accuracy'][-1]
             acc_change = ((current_val_acc - initial_val_metric) / abs(initial_val_metric + 1e-8)) * 100
             acc_arrow = '↑' if acc_change > 0 else '↓'
@@ -526,9 +481,9 @@ class DeepLearningTrainer:
                 self.scaler.scale(loss).backward()
 
                 # 梯度裁剪
-                if self.config.grad_clip > 0:
+                if self.config.training.grad_clip > 0:
                     self.scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.training.grad_clip)
 
                 self.scaler.step(optimizer)
                 self.scaler.update()
@@ -546,8 +501,8 @@ class DeepLearningTrainer:
                 loss.backward()
 
                 # 梯度裁剪
-                if self.config.grad_clip > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.grad_clip)
+                if self.config.training.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.training.grad_clip)
 
                 optimizer.step()
 
@@ -619,7 +574,7 @@ class DeepLearningTrainer:
         all_predictions = np.array(all_predictions)
         all_labels = np.array(all_labels)
 
-        if self.config.task_type == 'classification':
+        if self.config.task.type == 'classification':
             # 分类任务指标
             preds = np.argmax(all_predictions, axis=1)
             metrics = {
@@ -661,11 +616,11 @@ class DeepLearningTrainer:
 
         # 创建数据加载器（支持多进程和锁页内存）
         loader_kwargs = {
-            'batch_size': self.config.batch_size,
+            'batch_size': self.config.training.batch_size,
             'collate_fn': collate_fn,
-            'num_workers': self.config.num_workers,
-            'pin_memory': self.config.pin_memory and torch.cuda.is_available(),
-            'persistent_workers': self.config.num_workers > 0,
+            'num_workers': self.config.device.num_workers,
+            'pin_memory': self.config.device.pin_memory and torch.cuda.is_available(),
+            'persistent_workers': self.config.device.num_workers > 0,
         }
 
         train_loader = DataLoader(
@@ -679,24 +634,24 @@ class DeepLearningTrainer:
             **loader_kwargs,
         )
 
-        logger.info(f'DataLoader: batch_size={self.config.batch_size}, '
-                    f'num_workers={self.config.num_workers}, '
+        logger.info(f'DataLoader: batch_size={self.config.training.batch_size}, '
+                    f'num_workers={self.config.device.num_workers}, '
                     f'pin_memory={loader_kwargs["pin_memory"]}')
 
         # 损失函数（根据任务类型选择）
-        if self.config.task_type == 'classification':
-            if self.config.use_class_weights:
+        if self.config.task.type == 'classification':
+            if self.config.task.use_class_weights:
                 class_weights = self._compute_class_weights(train_dataset)
                 criterion = nn.CrossEntropyLoss(weight=class_weights)
             else:
                 criterion = nn.CrossEntropyLoss()
-            logger.info(f'使用分类任务，类别数: {self.config.num_classes}')
+            logger.info(f'使用分类任务，类别数: {self.config.task.num_classes}')
         else:
             criterion = nn.MSELoss()
             logger.info('使用回归任务')
 
         # 早停
-        early_stopping = EarlyStopping(patience=self.config.patience, mode='min')
+        early_stopping = EarlyStopping(patience=self.config.training.patience, mode='min')
 
         # 最佳模型
         best_metrics = None
@@ -706,7 +661,7 @@ class DeepLearningTrainer:
         self._init_history()
 
         # 训练循环
-        pbar = tqdm(range(self.config.epochs), desc=f'Fold {fold+1}')
+        pbar = tqdm(range(self.config.training.epochs), desc=f'Fold {fold+1}')
 
         # 记录初始指标用于阶段性汇总
         initial_train_loss = None
@@ -731,7 +686,7 @@ class DeepLearningTrainer:
             self.history['val_loss'].append(val_metrics['loss'])
             self.history['learning_rate'].append(current_lr)
 
-            if self.config.task_type == 'classification':
+            if self.config.task.type == 'classification':
                 self.history['val_accuracy'].append(val_metrics['accuracy'])
                 self.history['val_f1'].append(val_metrics['f1'])
             else:
@@ -745,7 +700,7 @@ class DeepLearningTrainer:
                 initial_val_metric = val_metrics.get('accuracy', val_metrics.get('r2'))
 
             # 更新进度条（根据任务类型显示不同指标）
-            if self.config.task_type == 'classification':
+            if self.config.task.type == 'classification':
                 pbar.set_postfix({
                     'loss': f'{train_loss:.3f}',
                     'val_loss': f'{val_metrics["loss"]:.3f}',
@@ -773,7 +728,7 @@ class DeepLearningTrainer:
                     best_model_state = self.model.state_dict().copy()
 
             # 阶段性汇总（每 summary_interval 个 epoch）
-            if (epoch + 1) % self.config.summary_interval == 0 and epoch > 0:
+            if (epoch + 1) % self.config.output.summary_interval == 0 and epoch > 0:
                 self._print_epoch_summary(
                     epoch=epoch + 1,
                     initial_train_loss=initial_train_loss,
@@ -786,7 +741,7 @@ class DeepLearningTrainer:
             # 早停检查
             if early_stopping(val_metrics['loss'], epoch):
                 print(f'\n{"="*60}')
-                print(f'  Early stopping triggered at epoch {epoch+1} (patience={self.config.patience})')
+                print(f'  Early stopping triggered at epoch {epoch+1} (patience={self.config.training.patience})')
                 print(f'  Best model saved at epoch {early_stopping.best_epoch + 1} with val_loss={early_stopping.best_score:.4f}')
                 print(f'{"="*60}\n')
                 logger.info(f'Early stopping at epoch {epoch+1}')
@@ -800,8 +755,8 @@ class DeepLearningTrainer:
                 self.model.load_state_dict(best_model_state)
 
         # 保存模型（保存不带DataParallel的状态）
-        if self.config.save_best:
-            model_path = os.path.join(self.config.output_dir, f'model_fold{fold}.pt')
+        if self.config.output.save_best:
+            model_path = os.path.join(self.config.experiment.output_dir, f'model_fold{fold}.pt')
             save_state = best_model_state if best_model_state is not None else (
                 self.model.module.state_dict() if isinstance(self.model, nn.DataParallel)
                 else self.model.state_dict()
@@ -815,7 +770,7 @@ class DeepLearningTrainer:
             logger.info(f'Model saved to {model_path}')
 
         # 保存训练曲线图
-        if self.config.save_figures:
+        if self.config.output.save_figures:
             self.plot_training_curves(fold=fold)
 
         return best_metrics
@@ -840,7 +795,7 @@ class DeepLearningTrainer:
 
         loader = DataLoader(
             dataset,
-            batch_size=self.config.batch_size,
+            batch_size=self.config.training.batch_size,
             shuffle=False,
             collate_fn=collate_fn,
             num_workers=0,

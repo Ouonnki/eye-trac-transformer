@@ -31,9 +31,9 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.dl_dataset import SequenceConfig, collate_fn
-from src.models.dl_trainer import TrainingConfig, DeepLearningTrainer
-from experiments.experiment_config import ExperimentConfig
+from src.models.dl_trainer import DeepLearningTrainer
 from src.data.split_strategy import TwoByTwoSplitter
+from src.config import UnifiedConfig
 
 # 配置日志
 logging.basicConfig(
@@ -195,16 +195,16 @@ def load_processed_data(data_path: str) -> List[Dict]:
 
 def run_2x2_experiment(
     data: List[Dict],
-    training_config: TrainingConfig,
-    experiment_config: ExperimentConfig,
+    config: UnifiedConfig,
+    seq_config: SequenceConfig,
 ) -> Dict:
     """
     运行 2×2 实验设计
 
     Args:
         data: 预处理后的数据
-        training_config: 训练配置
-        experiment_config: 实验配置
+        config: 统一配置
+        seq_config: 序列配置
 
     Returns:
         实验结果字典
@@ -212,31 +212,23 @@ def run_2x2_experiment(
     start_time = time.time()
 
     logger.info(f'Running 2×2 experiment design...')
-    logger.info(f'Train subjects: {experiment_config.train_subjects}')
-    logger.info(f'Train tasks: {experiment_config.train_tasks}')
-    logger.info(f'Repeats: {experiment_config.n_repeats}')
-
-    # 序列配置
-    seq_config = SequenceConfig(
-        max_seq_len=training_config.max_seq_len,
-        max_tasks=training_config.max_tasks,
-        max_segments=training_config.max_segments,
-        input_dim=training_config.input_dim,
-    )
+    logger.info(f'Train subjects: {config.experiment.train_subjects}')
+    logger.info(f'Train tasks: {config.experiment.train_tasks}')
+    logger.info(f'Repeats: {config.experiment.n_repeats}')
 
     # 创建划分器
     splitter = TwoByTwoSplitter(
-        train_subjects=experiment_config.train_subjects,
-        train_tasks=experiment_config.train_tasks,
-        random_state=experiment_config.random_seed,
+        train_subjects=config.experiment.train_subjects,
+        train_tasks=config.experiment.train_tasks,
+        random_state=config.experiment.random_seed,
     )
 
     # 多次重复实验的结果收集
     all_repeat_results = []
 
-    for repeat in range(experiment_config.n_repeats):
+    for repeat in range(config.experiment.n_repeats):
         logger.info(f'\n{"="*60}')
-        logger.info(f'Repeat {repeat + 1}/{experiment_config.n_repeats}')
+        logger.info(f'Repeat {repeat + 1}/{config.experiment.n_repeats}')
         logger.info(f'{"="*60}')
 
         # 执行划分
@@ -253,7 +245,7 @@ def run_2x2_experiment(
             data=splits['train'],
             config=seq_config,
             fit_normalizer=True,
-            task_type=training_config.task_type,
+            task_type=config.task.type,
         )
 
         # 所有测试集使用相同的归一化参数
@@ -265,11 +257,11 @@ def run_2x2_experiment(
                     config=seq_config,
                     fit_normalizer=False,
                     normalizer_stats=train_dataset.stats,
-                    task_type=training_config.task_type,
+                    task_type=config.task.type,
                 )
 
         # 创建训练器并训练
-        trainer = DeepLearningTrainer(training_config)
+        trainer = DeepLearningTrainer(config, seq_config)
         train_metrics = trainer.train(
             train_dataset,
             test_datasets.get('test1', test_datasets.get('test2')),  # 使用 test1 作为验证集
@@ -284,7 +276,7 @@ def run_2x2_experiment(
             predictions, labels, _ = trainer.predict(dataset)
 
             # 根据任务类型计算指标
-            if training_config.task_type == 'classification':
+            if config.task.type == 'classification':
                 # 分类任务：predictions 是 logits，需要 argmax
                 preds = np.argmax(predictions, axis=1) if len(predictions.shape) > 1 else predictions
                 metrics = {
@@ -302,7 +294,7 @@ def run_2x2_experiment(
 
             # 收集预测结果
             for i, sample in enumerate(splits[split_name]):
-                if training_config.task_type == 'classification':
+                if config.task.type == 'classification':
                     pred_class = int(preds[i]) + 1  # 转回 1-indexed
                     true_class = int(labels[i]) + 1
                     repeat_predictions[sample['subject_id']] = {
@@ -322,7 +314,7 @@ def run_2x2_experiment(
                     }
 
             logger.info(f'{split_name} Results:')
-            if training_config.task_type == 'classification':
+            if config.task.type == 'classification':
                 logger.info(f'  Accuracy: {metrics["accuracy"]:.4f}')
                 logger.info(f'  F1: {metrics["f1"]:.4f}')
             else:
@@ -345,7 +337,7 @@ def run_2x2_experiment(
         split_metrics = [r['metrics'].get(split_name, {}) for r in all_repeat_results if split_name in r['metrics']]
         if split_metrics:
             # 根据任务类型计算不同的平均指标
-            if training_config.task_type == 'classification':
+            if config.task.type == 'classification':
                 avg_metrics[split_name] = {
                     'accuracy': np.mean([m['accuracy'] for m in split_metrics]),
                     'accuracy_std': np.std([m['accuracy'] for m in split_metrics]) if len(split_metrics) > 1 else 0,
@@ -375,12 +367,12 @@ def run_2x2_experiment(
             avg_metrics[split_name]['description'] = desc
 
     results = {
-        'task_type': training_config.task_type,  # 添加任务类型
+        'task_type': config.task.type,  # 添加任务类型
         'experiment_info': {
-            'mode': experiment_config.mode,
-            'train_subjects': experiment_config.train_subjects,
-            'train_tasks': experiment_config.train_tasks,
-            'n_repeats': experiment_config.n_repeats,
+            'train_subjects': config.experiment.train_subjects,
+            'train_tasks': config.experiment.train_tasks,
+            'n_repeats': config.experiment.n_repeats,
+            'random_seed': config.experiment.random_seed,
             'timestamp': datetime.now().isoformat(),
             'duration_seconds': duration,
         },
@@ -406,11 +398,12 @@ def print_results(results: Dict) -> None:
     if 'experiment_info' in results:
         # 2×2 实验结果
         info = results['experiment_info']
-        print(f'\n实验模式: {info["mode"]}')
-        print(f'划分策略: 2×2 矩阵')
+        print(f'\n划分策略: 2×2 矩阵')
         print(f'训练被试数: {info["train_subjects"]}')
         print(f'训练任务数: {info["train_tasks"]}')
         print(f'重复次数: {info["n_repeats"]}')
+        if 'random_seed' in info:
+            print(f'随机种子: {info["random_seed"]}')
         print(f'耗时: {info["duration_seconds"]:.1f}秒')
         print(f'任务类型: {task_type}')
 
@@ -481,7 +474,7 @@ def print_results(results: Dict) -> None:
     print('\n' + '=' * 70)
 
 
-def save_results(results: Dict, output_dir: str, experiment_config: Optional[ExperimentConfig] = None) -> None:
+def save_results(results: Dict, output_dir: str, config: UnifiedConfig) -> None:
     """保存结果"""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -527,11 +520,9 @@ def save_results(results: Dict, output_dir: str, experiment_config: Optional[Exp
             logger.info(f'Predictions saved to {predictions_path}')
 
         # 保存配置快照
-        if experiment_config:
-            config_path = os.path.join(output_dir, 'config.json')
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(experiment_config.to_dict(), f, indent=2, ensure_ascii=False)
-            logger.info(f'Config saved to {config_path}')
+        config_path = os.path.join(output_dir, 'config.json')
+        config.save_snapshot(output_dir)
+        logger.info(f'Config saved to {config_path}')
 
     else:
         # K-Fold 交叉验证结果（保持兼容）
@@ -595,6 +586,32 @@ def save_results(results: Dict, output_dir: str, experiment_config: Optional[Exp
         logger.info(f'Predictions saved to {predictions_path}')
 
 
+def load_config(config_path: Optional[str] = None) -> tuple[UnifiedConfig, SequenceConfig]:
+    """
+    加载训练配置
+
+    从 JSON 文件加载配置，默认使用 configs/default.json
+
+    Args:
+        config_path: 配置文件路径
+
+    Returns:
+        (UnifiedConfig 实例, SequenceConfig 实例)
+    """
+    # 确定配置文件路径
+    if config_path is None:
+        config_path = os.environ.get('CONFIG', 'configs/default.json')
+
+    # 加载配置
+    logger.info(f'Loading config from: {config_path}')
+    config = UnifiedConfig.from_json(config_path)
+
+    # 创建序列配置（数据属性，暂时使用默认值）
+    seq_config = SequenceConfig()
+
+    return config, seq_config
+
+
 def main():
     """主函数"""
     print('=' * 70)
@@ -608,121 +625,18 @@ def main():
     base_output_dir = 'outputs/dl_models'  # 基础输出目录
 
     # ============================================================
-    # 训练配置
+    # 加载配置
     # ============================================================
-    # 选择配置模式: 'full' (完整模型), 'medium' (中等), 'light' (轻量)
-    # 如果显存不足，从 full -> medium -> light 依次尝试
-    MODEL_MODE = os.environ.get('MODEL_MODE', 'full')
+    config, seq_config = load_config()
 
-    # 任务类型: 'classification' 或 'regression'
-    TASK_TYPE = os.environ.get('TASK_TYPE', 'classification')
-
-    if MODEL_MODE == 'full':
-        # 完整模型配置（需要较大显存，约24GB+）
-        config = TrainingConfig(
-            input_dim=7,
-            segment_d_model=128,
-            segment_nhead=8,
-            segment_num_layers=6,
-            task_d_model=256,
-            task_nhead=8,
-            task_num_layers=4,
-            attention_dim=64,
-            dropout=0.1,
-            max_seq_len=100,
-            max_tasks=30,
-            max_segments=30,
-            batch_size=16,
-            learning_rate=1e-4,
-            weight_decay=1e-4,
-            warmup_epochs=5,
-            epochs=100,
-            patience=15,
-            grad_clip=1.0,
-            use_multi_gpu=False,
-            use_amp=True,
-            use_gradient_checkpointing=True,  # 启用梯度检查点节省显存
-            num_workers=4,
-            pin_memory=True,
-            output_dir=base_output_dir,  # 会在后面被时间戳目录覆盖
-            save_best=True,
-            task_type=TASK_TYPE,
-        )
-    elif MODEL_MODE == 'medium':
-        # 中等配置（适合RTX 3090 24GB）
-        config = TrainingConfig(
-            input_dim=7,
-            segment_d_model=96,
-            segment_nhead=6,
-            segment_num_layers=4,
-            task_d_model=192,
-            task_nhead=6,
-            task_num_layers=3,
-            attention_dim=48,
-            dropout=0.1,
-            max_seq_len=80,
-            max_tasks=25,
-            max_segments=25,
-            batch_size=8,
-            learning_rate=8e-5,
-            weight_decay=1e-4,
-            warmup_epochs=4,
-            epochs=100,
-            patience=15,
-            grad_clip=1.0,
-            use_multi_gpu=False,
-            use_amp=True,
-            use_gradient_checkpointing=True,  # 启用梯度检查点节省显存
-            num_workers=4,
-            pin_memory=True,
-            output_dir=base_output_dir,  # 会在后面被时间戳目录覆盖
-            save_best=True,
-            task_type=TASK_TYPE,
-        )
-    else:  # 'light'
-        # 轻量配置（显存不足时的备选方案）
-        config = TrainingConfig(
-            input_dim=7,
-            segment_d_model=64,
-            segment_nhead=4,
-            segment_num_layers=2,
-            task_d_model=128,
-            task_nhead=4,
-            task_num_layers=2,
-            attention_dim=32,
-            dropout=0.1,
-            max_seq_len=50,
-            max_tasks=20,
-            max_segments=20,
-            batch_size=4,
-            learning_rate=5e-5,
-            weight_decay=1e-4,
-            warmup_epochs=3,
-            epochs=100,
-            patience=15,
-            grad_clip=1.0,
-            use_multi_gpu=False,
-            use_amp=True,
-            use_gradient_checkpointing=False,  # 轻量配置无需梯度检查点
-            num_workers=2,
-            pin_memory=True,
-            output_dir=base_output_dir,  # 会在后面被时间戳目录覆盖
-            save_best=True,
-            task_type=TASK_TYPE,
-        )
-
-    # 打印配置
+    # 打印配置摘要
     print(f'\n{"="*50}')
-    print(f'Configuration Mode: {MODEL_MODE}')
-    print(f'Task Type: {TASK_TYPE}')
+    print(f'Task Type: {config.task.type}')
     print(f'{"="*50}')
     print(f'Processed Data: {processed_data_path}')
-    print(f'Base Output Dir: {base_output_dir}')
-    print(f'Batch Size: {config.batch_size}')
-    print(f'Max Tasks: {config.max_tasks}, Max Segments: {config.max_segments}')
-    print(f'Max Seq Len: {config.max_seq_len}')
-    print(f'Model: segment_d={config.segment_d_model}, task_d={config.task_d_model}')
-    print(f'Layers: segment={config.segment_num_layers}, task={config.task_num_layers}')
+    print(f'Batch Size: {config.training.batch_size}')
+    print(f'Model: segment_d={config.model.segment_d_model}, task_d={config.model.task_d_model}')
+    print(f'Layers: segment={config.model.segment_num_layers}, task={config.model.task_num_layers}')
 
     # GPU信息
     if torch.cuda.is_available():
@@ -756,36 +670,37 @@ def main():
     print(f'  Tasks: {total_tasks}')
     print(f'  Segments: {total_segments}')
 
-    # ============================================================
-    # 实验配置（从环境变量读取）
-    # ============================================================
-    experiment_config = ExperimentConfig.from_env()
-
-    # 使用实验配置的输出目录作为基础目录，生成带时间戳的子目录
-    if experiment_config.output_dir:
-        base_output_dir = experiment_config.output_dir
+    # 生成带时间戳的输出目录
+    base_output_dir = config.experiment.output_dir
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_dir = os.path.join(base_output_dir, f'{TASK_TYPE}_{MODEL_MODE}_{timestamp}')
-    config.output_dir = output_dir
-
-    # 更新图表配置
-    config.save_figures = experiment_config.save_figures
-    config.figure_dpi = experiment_config.figure_dpi
+    task_type = config.task.type
+    output_dir = os.path.join(base_output_dir, f'{task_type}_{timestamp}')
+    config.experiment.output_dir = output_dir
 
     # 打印实验配置
-    experiment_config.print_config()
+    print('\n' + '=' * 60)
+    print('实验配置')
+    print('=' * 60)
+    print(f'  划分策略: 2×2 矩阵')
+    print(f'  训练被试数: {config.experiment.train_subjects}')
+    print(f'  训练任务数: {config.experiment.train_tasks}')
+    print(f'  重复次数: {config.experiment.n_repeats}')
+    print(f'  随机种子: {config.experiment.random_seed}')
+    print(f'  保存图表: {config.output.save_figures}')
+    print(f'  输出目录: {config.experiment.output_dir}')
+    print('=' * 60)
 
     # ============================================================
     # 运行实验
     # ============================================================
     # 运行 2×2 矩阵划分实验
-    results = run_2x2_experiment(data, config, experiment_config)
+    results = run_2x2_experiment(data, config, seq_config)
 
     # 打印结果
     print_results(results)
 
     # 保存结果
-    save_results(results, output_dir, experiment_config)
+    save_results(results, output_dir, config)
 
     print('\nExperiment completed!')
 

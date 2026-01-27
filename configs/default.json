@@ -1,0 +1,61 @@
+{
+  "experiment": {
+    "train_subjects": 100,
+    "train_tasks": 20,
+    "n_repeats": 1,
+    "random_seed": 42,
+    "experiment_name": "",
+    "output_dir": "outputs/dl_models"
+  },
+  "model": {
+    "input_dim": 7,
+    "segment_d_model": 64,
+    "segment_nhead": 4,
+    "segment_num_layers": 4,
+    "task_d_model": 128,
+    "task_nhead": 4,
+    "task_num_layers": 2,
+    "attention_dim": 32,
+    "dropout": 0.1
+  },
+  "training": {
+    "batch_size": 8,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0001,
+    "warmup_epochs": 5,
+    "epochs": 400,
+    "patience": 100,
+    "grad_clip": 1.0
+  },
+  "task": {
+    "type": "classification",
+    "num_classes": 3,
+    "use_class_weights": true
+  },
+  "cadt": {
+    "target_domain": "test1",
+    "cadt_kl_weight": 1.0,
+    "cadt_dis_weight": 1.0,
+    "pre_train_epochs": 120,
+    "pre_train_dis_weight": 0.1,
+    "reset_mode": "optimizer",
+    "use_augmentation": true,
+    "encoder_lr": 0.0001,
+    "classifier_lr": 0.001,
+    "discriminator_lr": 0.001
+  },
+  "device": {
+    "device": "cuda",
+    "use_multi_gpu": true,
+    "use_amp": true,
+    "use_gradient_checkpointing": false,
+    "num_workers": 8,
+    "pin_memory": true
+  },
+  "output": {
+    "save_best": true,
+    "save_figures": true,
+    "figure_dpi": 150,
+    "summary_interval": 10
+  }
+}
