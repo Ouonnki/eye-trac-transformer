@@ -518,10 +518,15 @@ def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     Returns:
         批次数据字典
     """
+    labels = [b['label'] for b in batch]
+    # 检查 label 是否为标量（0维），如果是则转换为 1 维张量
+    if len(labels) > 0 and labels[0].dim() == 0:
+        labels = [l.unsqueeze(0) for l in labels]
+
     return {
         'features': torch.stack([b['features'] for b in batch]),
         'length': torch.tensor([b['length'] for b in batch], dtype=torch.long),
-        'label': torch.stack([b['label'] for b in batch]),
+        'label': torch.stack(labels),
         'subject_ids': [b['subject_id'] for b in batch],
         'task_ids': [b['task_id'] for b in batch],
     }
