@@ -6,12 +6,13 @@
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 
-from src.config import ModelConfig
+from src.config import ModelConfig, UnifiedConfig
+from src.models.dl_dataset import SequenceConfig
 from src.models.encoders import GazeTransformerEncoder
 from src.models.heads import PredictionHead
 
@@ -117,7 +118,7 @@ class SegmentEncoder(nn.Module):
     @classmethod
     def from_config(
         cls,
-        config,
+        config: UnifiedConfig,
         seq_config: SequenceConfig,
         **kwargs,
     ) -> 'SegmentEncoder':

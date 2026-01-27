@@ -37,7 +37,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.models.dl_dataset import SequenceConfig, SegmentGazeDataset, segment_collate_fn
 from src.models.segment_trainer import SegmentTrainer
 from src.data.split_strategy import TwoByTwoSplitter
-from src.data.schemas import TaskConfig
 from src.config import UnifiedConfig
 
 # 配置日志
@@ -57,90 +56,6 @@ def load_processed_data(data_path: str) -> List[Dict]:
     return data
 
 
-def create_segment_dataset_from_split(
-    split_data: List[Dict],
-    seq_config: SequenceConfig,
-    normalizer_stats: Optional[Dict] = None,
-) -> SegmentGazeDataset:
-    """
-    从划分后的数据创建片段级数据集
-
-    Args:
-        split_data: 划分后的数据列表（预处理后的格式）
-        seq_config: 序列配置
-        normalizer_stats: 归一化统计量（用于保持一致性）
-
-    Returns:
-        SegmentGazeDataset 实例
-    """
-    # 需要将预处理数据转换为 SubjectData 格式
-    # 这里我们创建一个轻量级的适配
-    from src.data.schemas import SubjectData, TaskTrial, SearchSegment, GazePoint
-
-    subjects = []
-    for subject_dict in split_data:
-        # 构造 trial 列表
-        trials = []
-        for task_dict in subject_dict['tasks']:
-            segments = []
-            for segment_features in task_dict['segments']:
-                # 将特征转换回 GazePoint 列表（近似逆变换）
-                gaze_points = []
-                for i, feat in enumerate(segment_features):
-                    # 反归一化（近似）
-                    x = feat[0] * seq_config.screen_width
-                    y = feat[1] * seq_config.screen_height
-                    # 时间戳使用近似值
-                    timestamp = pd.Timestamp('2024-01-01') + pd.Timedelta(milliseconds=i * 10)
-                    gaze_points.append(GazePoint(
-                        timestamp=timestamp,
-                        x=float(x),
-                        y=float(y),
-                    ))
-                segments.append(SearchSegment(
-                    segment_id=i,
-                    start_number=0,
-                    target_number=int(i % 10) + 1,
-                    gaze_points=gaze_points,
-                    start_time=gaze_points[0].timestamp if gaze_points else pd.Timestamp('2024-01-01'),
-                    end_time=gaze_points[-1].timestamp if gaze_points else pd.Timestamp('2024-01-01'),
-                    target_position=(0.0, 0.0),
-                ))
-
-            trials.append(TaskTrial(
-                subject_id=subject_dict['subject_id'],
-                task_id=task_dict['task_id'],
-                config=TaskConfig(task_id=task_dict['task_id'], grid_size=25, number_range=(1, 25)),
-                segments=segments,
-            ))
-
-        subject = SubjectData(
-            subject_id=subject_dict['subject_id'],
-            total_score=subject_dict['label'],
-            category=subject_dict.get('category', 2),  # 默认中分组
-            trials=trials,
-        )
-        subjects.append(subject)
-
-    # 创建数据集
-    dataset = SegmentGazeDataset(
-        subjects=subjects,
-        config=seq_config,
-        fit_normalizer=False,  # 不重新拟合，使用提供的统计量
-    )
-
-    # 如果提供了归一化统计量，应用它们
-    if normalizer_stats:
-        dataset.feature_extractor.dt_mean = normalizer_stats['dt_mean']
-        dataset.feature_extractor.dt_std = normalizer_stats['dt_std']
-        dataset.feature_extractor.velocity_mean = normalizer_stats['velocity_mean']
-        dataset.feature_extractor.velocity_std = normalizer_stats['velocity_std']
-        dataset.feature_extractor.acceleration_mean = normalizer_stats['acceleration_mean']
-        dataset.feature_extractor.acceleration_std = normalizer_stats['acceleration_std']
-
-    return dataset
-
-
 def evaluate_on_split(
     trainer: SegmentTrainer,
     test_data: List[Dict],
@@ -153,7 +68,7 @@ def evaluate_on_split(
 
     Args:
         trainer: 训练好的训练器
-        test_data: 测试数据
+        test_data: 测试数据（预处理格式）
         seq_config: 序列配置
         split_name: 划分名称
         normalizer_stats: 归一化统计量
@@ -163,8 +78,8 @@ def evaluate_on_split(
     """
     logger.info(f'评估 {split_name}...')
 
-    # 创建测试数据集
-    test_dataset = create_segment_dataset_from_split(test_data, seq_config, normalizer_stats)
+    # 使用 from_processed_data 创建测试数据集
+    test_dataset = SegmentGazeDataset.from_processed_data(test_data, seq_config, normalizer_stats)
     logger.info(f'{split_name}: {len(test_dataset)} 个片段, {len(set(test_dataset.segment_subject_ids))} 个被试')
 
     # 评估
@@ -220,25 +135,28 @@ def run_2x2_experiment(
     # 执行划分
     splits = splitter.split(data)
 
-    # 计算归一化统计量（只在训练集上）
-    logger.info('计算归一化统计量...')
-    train_dataset_full = create_segment_dataset_from_split(splits['train'], seq_config)
-    train_dataset_full.feature_extractor.fit_normalization(
-        [f for f in train_dataset_full.segments if len(f) > 0]
-    )
+    # 直接使用预处理数据创建训练数据集并拟合归一化器
+    logger.info('创建训练数据集并拟合归一化器...')
+    train_dataset = SegmentGazeDataset.from_processed_data(splits['train'], seq_config)
+
+    # 拟合归一化器并应用
+    all_features = [f for f in train_dataset.segments if len(f) > 0]
+    if all_features:
+        train_dataset.feature_extractor.fit_normalization(all_features)
+        for i, features in enumerate(train_dataset.segments):
+            if len(features) > 0:
+                train_dataset.segments[i] = train_dataset.feature_extractor.normalize(features)
+
+    # 收集归一化统计量
     normalizer_stats = {
-        'dt_mean': train_dataset_full.feature_extractor.dt_mean,
-        'dt_std': train_dataset_full.feature_extractor.dt_std,
-        'velocity_mean': train_dataset_full.feature_extractor.velocity_mean,
-        'velocity_std': train_dataset_full.feature_extractor.velocity_std,
-        'acceleration_mean': train_dataset_full.feature_extractor.acceleration_mean,
-        'acceleration_std': train_dataset_full.feature_extractor.acceleration_std,
+        'dt_mean': train_dataset.feature_extractor.dt_mean,
+        'dt_std': train_dataset.feature_extractor.dt_std,
+        'velocity_mean': train_dataset.feature_extractor.velocity_mean,
+        'velocity_std': train_dataset.feature_extractor.velocity_std,
+        'acceleration_mean': train_dataset.feature_extractor.acceleration_mean,
+        'acceleration_std': train_dataset.feature_extractor.acceleration_std,
     }
     logger.info(f'归一化统计量: {normalizer_stats}')
-
-    # 使用归一化后的训练集
-    train_dataset = create_segment_dataset_from_split(splits['train'], seq_config, normalizer_stats)
-    logger.info(f'训练集: {len(train_dataset)} 个片段')
 
     # 创建验证集（从训练集划分20%）
     val_size = len(train_dataset) // 5
@@ -246,9 +164,10 @@ def run_2x2_experiment(
     from torch.utils.data import Subset
     import random
     indices = list(range(len(train_dataset)))
+    random.seed(config.experiment.random_seed)
     random.shuffle(indices)
-    train_subset = Subset(train_dataset, indices[train_size:])
-    val_subset = Subset(train_dataset, indices[:val_size])
+    train_subset = Subset(train_dataset, indices[:train_size])
+    val_subset = Subset(train_dataset, indices[train_size:])
 
     logger.info(f'训练子集: {len(train_subset)} 片段, 验证子集: {len(val_subset)} 片段')
 

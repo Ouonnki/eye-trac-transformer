@@ -427,6 +427,76 @@ class SegmentGazeDataset(Dataset):
             'task_id': self.segment_task_ids[idx],
         }
 
+    @classmethod
+    def from_processed_data(
+        cls,
+        processed_data: List[Dict],
+        config: SequenceConfig,
+        normalizer_stats: Optional[Dict] = None,
+    ) -> 'SegmentGazeDataset':
+        """
+        直接从预处理数据创建数据集（无需逆向转换）
+
+        Args:
+            processed_data: 预处理数据列表，每个元素包含:
+                - subject_id: str
+                - label: float
+                - category: int
+                - tasks: List[Dict] with 'task_id' and 'segments'
+            config: 序列配置
+            normalizer_stats: 归一化统计量（可选）
+
+        Returns:
+            SegmentGazeDataset 实例
+        """
+        segments = []
+        segment_labels = []
+        segment_subject_ids = []
+        segment_task_ids = []
+
+        for subject_dict in processed_data:
+            subject_id = subject_dict['subject_id']
+            # 分类任务使用 category，回归任务使用 label
+            label = subject_dict.get('category', subject_dict['label'])
+
+            for task_dict in subject_dict['tasks']:
+                task_id = task_dict['task_id']
+
+                for segment_features in task_dict['segments']:
+                    if len(segment_features) >= 2:  # 至少2个点
+                        segments.append(segment_features)
+                        segment_labels.append(label)
+                        segment_subject_ids.append(subject_id)
+                        segment_task_ids.append(task_id)
+
+        # 创建数据集实例（绕过 __init__ 避免重新提取特征）
+        dataset = cls.__new__(cls)
+        dataset.config = config
+        dataset.segments = segments
+        dataset.segment_labels = segment_labels
+        dataset.segment_subject_ids = segment_subject_ids
+        dataset.segment_task_ids = segment_task_ids
+        dataset.feature_extractor = SequenceFeatureExtractor(config)
+
+        # 应用归一化统计量
+        if normalizer_stats:
+            dataset.feature_extractor.dt_mean = normalizer_stats['dt_mean']
+            dataset.feature_extractor.dt_std = normalizer_stats['dt_std']
+            dataset.feature_extractor.velocity_mean = normalizer_stats['velocity_mean']
+            dataset.feature_extractor.velocity_std = normalizer_stats['velocity_std']
+            dataset.feature_extractor.acceleration_mean = normalizer_stats['acceleration_mean']
+            dataset.feature_extractor.acceleration_std = normalizer_stats['acceleration_std']
+
+            # 应用归一化
+            for i, features in enumerate(dataset.segments):
+                if len(features) > 0:
+                    dataset.segments[i] = dataset.feature_extractor.normalize(features)
+
+        logger.info(f'片段级数据集创建完成: {len(dataset.segments)} 个片段, '
+                   f'{len(set(dataset.segment_subject_ids))} 个被试')
+
+        return dataset
+
 
 def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
