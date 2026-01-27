@@ -95,7 +95,6 @@ def create_segment_dataset_from_split(
                         timestamp=timestamp,
                         x=float(x),
                         y=float(y),
-                        pupil_size=0.0,
                     ))
                 segments.append(SearchSegment(
                     gaze_points=gaze_points,
