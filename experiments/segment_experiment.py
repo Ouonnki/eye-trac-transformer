@@ -292,7 +292,7 @@ def main():
     logger.info(f'配置: {config.to_dict()}')
 
     # 加载数据
-    data_path = 'outputs/processed_data.pkl'
+    data_path = 'data/processed/processed_data.pkl'
     if not os.path.exists(data_path):
         logger.error(f'预处理数据不存在: {data_path}')
         logger.info('请先运行 scripts/preprocess_data.py')
