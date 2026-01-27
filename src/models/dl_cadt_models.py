@@ -12,12 +12,10 @@ import torch
 import torch.nn as nn
 from torch.autograd import Function
 
-from src.models.dl_models import (
-    HierarchicalTransformerNetwork,
-    GazeTransformerEncoder,
-    TaskTransformerEncoder,
-)
-from src.models.attention import AttentionPooling
+from src.config import UnifiedConfig
+from src.models.base import BaseModel
+from src.models.encoders import HierarchicalEncoder
+from src.models.dl_dataset import SequenceConfig
 
 
 class GradientReversalFunction(Function):
@@ -111,7 +109,6 @@ class Discriminator(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.LeakyReLU(0.01, inplace=True),
             nn.Linear(hidden_size, 1),
-            # 移除 Sigmoid，配合 BCEWithLogitsLoss 使用
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -127,150 +124,7 @@ class Discriminator(nn.Module):
         return self.model(x)
 
 
-class HierarchicalTransformerEncoder(nn.Module):
-    """
-    层级 Transformer 编码器（仅特征提取部分）
-
-    复用 HierarchicalTransformerNetwork 的结构，但不包含预测头。
-    输出 subject_repr 用于域适应。
-    """
-
-    def __init__(
-        self,
-        input_dim: int = 7,
-        segment_d_model: int = 64,
-        segment_nhead: int = 4,
-        segment_num_layers: int = 4,
-        task_d_model: int = 128,
-        task_nhead: int = 4,
-        task_num_layers: int = 2,
-        attention_dim: int = 32,
-        dropout: float = 0.1,
-        max_seq_len: int = 100,
-        max_tasks: int = 30,
-        max_segments: int = 30,
-        use_gradient_checkpointing: bool = False,
-    ):
-        """
-        初始化
-
-        Args:
-            input_dim: 输入特征维度
-            segment_d_model: 片段编码器维度
-            segment_nhead: 片段编码器注意力头数
-            segment_num_layers: 片段编码器层数
-            task_d_model: 任务编码器维度
-            task_nhead: 任务编码器注意力头数
-            task_num_layers: 任务编码器层数
-            attention_dim: 聚合注意力维度
-            dropout: Dropout 比例
-            max_seq_len: 最大序列长度
-            max_tasks: 最大任务数
-            max_segments: 最大片段数
-            use_gradient_checkpointing: 是否使用梯度检查点
-        """
-        super().__init__()
-
-        self.max_tasks = max_tasks
-        self.max_segments = max_segments
-        self.output_dim = task_d_model
-
-        # 片段编码器
-        self.segment_encoder = GazeTransformerEncoder(
-            input_dim=input_dim,
-            d_model=segment_d_model,
-            nhead=segment_nhead,
-            num_layers=segment_num_layers,
-            dim_feedforward=segment_d_model * 4,
-            dropout=dropout,
-            max_seq_len=max_seq_len,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-        )
-
-        # 任务聚合器
-        self.task_aggregator = AttentionPooling(
-            input_dim=segment_d_model,
-            attention_dim=attention_dim,
-            dropout=dropout,
-        )
-
-        # 任务序列编码器
-        self.task_encoder = TaskTransformerEncoder(
-            input_dim=segment_d_model,
-            d_model=task_d_model,
-            nhead=task_nhead,
-            num_layers=task_num_layers,
-            dim_feedforward=task_d_model * 4,
-            dropout=dropout,
-            max_tasks=max_tasks,
-        )
-
-        # 被试聚合器
-        self.subject_aggregator = AttentionPooling(
-            input_dim=task_d_model,
-            attention_dim=attention_dim,
-            dropout=dropout,
-        )
-
-    def forward(
-        self,
-        segments: torch.Tensor,
-        segment_mask: torch.Tensor,
-        task_mask: torch.Tensor,
-        segment_lengths: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        前向传播
-
-        Args:
-            segments: (batch, max_tasks, max_segments, max_seq_len, input_dim) 眼动序列
-            segment_mask: (batch, max_tasks, max_segments) 有效片段掩码
-            task_mask: (batch, max_tasks) 有效任务掩码
-            segment_lengths: (batch, max_tasks, max_segments) 每个片段的实际长度
-
-        Returns:
-            subject_repr: (batch, task_d_model) 被试级特征表示
-            extras: 包含注意力权重等额外信息的字典
-        """
-        batch_size = segments.size(0)
-        device = segments.device
-
-        # 1. 编码所有片段
-        flat_segments = segments.view(-1, segments.size(-2), segments.size(-1))
-
-        if segment_lengths is not None:
-            flat_lengths = segment_lengths.view(-1)
-            max_len = segments.size(-2)
-            seq_mask = torch.arange(max_len, device=device).unsqueeze(0) < flat_lengths.unsqueeze(1)
-        else:
-            seq_mask = None
-
-        segment_reprs, _ = self.segment_encoder(flat_segments, seq_mask)
-        segment_reprs = segment_reprs.view(batch_size, self.max_tasks, self.max_segments, -1)
-
-        # 2. 聚合片段到任务
-        segment_reprs_flat = segment_reprs.view(batch_size * self.max_tasks, self.max_segments, -1)
-        segment_mask_flat = segment_mask.view(batch_size * self.max_tasks, self.max_segments)
-
-        task_reprs_flat, segment_attns_flat = self.task_aggregator(segment_reprs_flat, segment_mask_flat)
-        task_reprs = task_reprs_flat.view(batch_size, self.max_tasks, -1)
-        segment_attentions = segment_attns_flat.view(batch_size, self.max_tasks, self.max_segments)
-
-        # 3. 编码任务序列
-        task_encoded = self.task_encoder(task_reprs, task_mask)
-
-        # 4. 聚合任务到被试
-        subject_repr, task_attention = self.subject_aggregator(task_encoded, task_mask)
-
-        extras = {
-            'segment_attention': segment_attentions,
-            'task_attention': task_attention,
-        }
-
-        return subject_repr, extras
-
-
-class CADTTransformerModel(nn.Module):
+class CADTTransformerModel(BaseModel):
     """
     CADT-Transformer 域适应模型
 
@@ -278,40 +132,42 @@ class CADTTransformerModel(nn.Module):
     1. 双辨别器机制：discriminator（特征+距离）和 discriminator2（纯特征）
     2. 原型学习：计算源域各类别的特征中心，通过 kl_loss 对齐
     3. 两阶段训练：预训练阶段 + 正式训练阶段
+
+    使用 from_config() 从配置创建实例。
     """
 
-    def __init__(self, config):
+    def __init__(
+        self,
+        model_config: 'ModelConfig',
+        seq_config: SequenceConfig,
+        device_config: 'DeviceConfig',
+        cadt_config: 'CADTConfig',
+        num_classes: int,
+    ):
         """
         初始化
 
         Args:
-            config: CADTConfig 配置对象
+            model_config: 模型架构配置
+            seq_config: 序列配置
+            device_config: 设备配置
+            cadt_config: CADT 域适应配置
+            num_classes: 类别数量
         """
         super().__init__()
 
-        self.config = config
-        self.num_classes = config.num_classes
-        self.feature_dim = config.task_d_model  # 直接使用 Transformer 的特征维度
+        self.num_classes = num_classes
+        self.feature_dim = model_config.task_d_model
 
-        # 特征编码器
-        self.encoder = HierarchicalTransformerEncoder(
-            input_dim=config.input_dim,
-            segment_d_model=config.segment_d_model,
-            segment_nhead=config.segment_nhead,
-            segment_num_layers=config.segment_num_layers,
-            task_d_model=config.task_d_model,
-            task_nhead=config.task_nhead,
-            task_num_layers=config.task_num_layers,
-            attention_dim=config.attention_dim,
-            dropout=config.dropout,
-            max_seq_len=config.max_seq_len,
-            max_tasks=config.max_tasks,
-            max_segments=config.max_segments,
-            use_gradient_checkpointing=config.use_gradient_checkpointing,
+        # 特征编码器（复用层级编码器）
+        self.encoder = HierarchicalEncoder(
+            model_config=model_config,
+            seq_config=seq_config,
+            use_gradient_checkpointing=device_config.use_gradient_checkpointing,
         )
 
         # 分类器
-        self.classifier = Classifier(self.feature_dim, self.num_classes)
+        self.classifier = Classifier(self.feature_dim, num_classes)
 
         # 双辨别器（与原始 CADT 一致）
         # discriminator: 输入 (特征 + 到各类原型的最小距离)，用于对抗训练
@@ -320,15 +176,46 @@ class CADTTransformerModel(nn.Module):
         self.discriminator2 = Discriminator(self.feature_dim, hidden_size=64)
 
         # 损失函数
-        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=0.1)  # Label Smoothing 防止过拟合
+        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=cadt_config.label_smoothing)
         self.mse_loss = nn.MSELoss(reduction='mean')
-        self.bce_loss = nn.BCEWithLogitsLoss()  # 使用 BCEWithLogitsLoss 以支持 AMP
+        self.bce_loss = nn.BCEWithLogitsLoss()
 
         # 类别原型中心（在 init_center_c 中初始化）
         self.c = None  # shape: (num_classes, feature_dim)
 
         # one-hot 编码矩阵
-        self.register_buffer('eye_matrix', torch.eye(self.num_classes))
+        self.register_buffer('eye_matrix', torch.eye(num_classes))
+
+    @classmethod
+    def from_config(
+        cls,
+        config: UnifiedConfig,
+        seq_config: SequenceConfig,
+        **kwargs,
+    ) -> 'CADTTransformerModel':
+        """
+        从配置创建模型
+
+        Args:
+            config: 统一配置对象
+            seq_config: 序列配置对象
+            **kwargs: 额外参数（如 num_classes）
+
+        Returns:
+            模型实例
+        """
+        # 从 kwargs 获取 num_classes，默认根据 task 类型决定
+        num_classes = kwargs.get('num_classes', None)
+        if num_classes is None:
+            num_classes = config.task.num_classes
+
+        return cls(
+            model_config=config.model,
+            seq_config=seq_config,
+            device_config=config.device,
+            cadt_config=config.cadt,
+            num_classes=num_classes,
+        )
 
     def reset(self):
         """
@@ -493,14 +380,12 @@ class CADTTransformerModel(nn.Module):
         tgt_features, _ = self.encoder(tgt_segments, tgt_segment_mask, tgt_task_mask, tgt_segment_lengths)
 
         # 预训练阶段：只使用分类损失 + 域分类损失（discriminator2）
-        # 注意：原始 CADT 中 discriminator2 不使用对抗训练，直接学习域分类
         if change_center:
             # 分类损失
             src_pred = self.classifier(src_features)
             ce_loss = self.ce_loss(src_pred, src_labels)
 
             # 域分类损失（discriminator2，非对抗）
-            # 源域=0, 目标域=1
             src_label = torch.zeros(batch_size_src, 1, device=device)
             tgt_label = torch.ones(batch_size_tgt, 1, device=device)
 
@@ -515,16 +400,15 @@ class CADTTransformerModel(nn.Module):
                 'domain_loss': domain_loss.item(),
                 'kl_loss': 0.0,
                 'dis_loss': 0.0,
-                'need_discriminator_step': False,  # 预训练阶段不需要单独更新 discriminator
+                'need_discriminator_step': False,
             }
 
-        # 正式训练阶段：完整损失 + 两阶段更新（与原始 CADT 一致）
-        # 获取原型对齐目标
+        # 正式训练阶段：完整损失 + 两阶段更新
         py = self.c[src_labels].detach()  # (batch, feature_dim)
 
         # 计算到各中心的最小距离
-        src_dist = self.compute_distance_to_centers(src_features)  # (batch, 1)
-        tgt_dist = self.compute_distance_to_centers(tgt_features)  # (batch, 1)
+        src_dist = self.compute_distance_to_centers(src_features)
+        tgt_dist = self.compute_distance_to_centers(tgt_features)
 
         # 原型聚类损失
         kl_loss = self.mse_loss(src_features, py)
@@ -533,11 +417,9 @@ class CADTTransformerModel(nn.Module):
         src_pred = self.classifier(src_features)
         ce_loss = self.ce_loss(src_pred, src_labels)
 
-        # === 第一阶段：对抗损失（用翻转标签训练 encoder 欺骗 discriminator）===
-        # 原始 CADT: target 标记为 source (0), source 标记为 target (1)
-        # 这让 encoder 学习生成让 discriminator 混淆的特征
-        src_fake_label = torch.ones(batch_size_src, 1, device=device)   # source 伪装成 target
-        tgt_real_label = torch.zeros(batch_size_tgt, 1, device=device)  # target 伪装成 source
+        # 对抗损失（用翻转标签训练 encoder 欺骗 discriminator）
+        src_fake_label = torch.ones(batch_size_src, 1, device=device)
+        tgt_real_label = torch.zeros(batch_size_tgt, 1, device=device)
 
         dis_loss_adv = self.bce_loss(
             self.discriminator(torch.cat([src_features, src_dist], dim=1)), src_fake_label
@@ -545,21 +427,19 @@ class CADTTransformerModel(nn.Module):
             self.discriminator(torch.cat([tgt_features, tgt_dist], dim=1)), tgt_real_label
         )
 
-        # 域分类损失（discriminator2，非对抗，直接训练）
+        # 域分类损失（discriminator2，非对抗）
         src_label = torch.zeros(batch_size_src, 1, device=device)
         tgt_label = torch.ones(batch_size_tgt, 1, device=device)
 
         domain_loss = self.bce_loss(self.discriminator2(src_features), src_label) + \
                       self.bce_loss(self.discriminator2(tgt_features), tgt_label)
 
-        # 总损失（用于更新 encoder, classifier, discriminator2）
+        # 总损失
         total_loss = ce_loss + kl_loss * kl_w + dis_loss_adv * dis_w + domain_loss
 
-        # === 第二阶段：单独训练 discriminator（使用 detach 和真实标签）===
-        # 这部分在 trainer 中单独处理
-        # 保存用于第二阶段的信息
-        src_real_label = torch.zeros(batch_size_src, 1, device=device)  # source 真实标签
-        tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)   # target 真实标签
+        # 第二阶段：单独训练 discriminator 的损失
+        src_real_label = torch.zeros(batch_size_src, 1, device=device)
+        tgt_fake_label = torch.ones(batch_size_tgt, 1, device=device)
 
         dis_loss_real = self.bce_loss(
             self.discriminator(torch.cat([src_features.detach(), src_dist.detach()], dim=1)), src_real_label
@@ -573,8 +453,8 @@ class CADTTransformerModel(nn.Module):
             'kl_loss': kl_loss.item(),
             'dis_loss': dis_loss_adv.item(),
             'domain_loss': domain_loss.item(),
-            'need_discriminator_step': True,  # 需要单独更新 discriminator
-            'dis_loss_for_discriminator': dis_loss_real,  # 用于单独更新 discriminator 的损失
+            'need_discriminator_step': True,
+            'dis_loss_for_discriminator': dis_loss_real,
         }
 
     def compute_classification_loss(

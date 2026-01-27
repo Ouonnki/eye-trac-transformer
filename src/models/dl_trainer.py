@@ -190,24 +190,14 @@ class DeepLearningTrainer:
         return torch.tensor(weights, dtype=torch.float32, device=self.device)
 
     def _create_model(self) -> nn.Module:
-        """创建模型（支持多GPU和梯度检查点）"""
+        """创建模型（使用 from_config 方法）"""
         # 确定输出类别数
         num_classes = self.config.task.num_classes if self.config.task.type == 'classification' else 1
 
-        model = HierarchicalTransformerNetwork(
-            input_dim=self.config.model.input_dim,
-            segment_d_model=self.config.model.segment_d_model,
-            segment_nhead=self.config.model.segment_nhead,
-            segment_num_layers=self.config.model.segment_num_layers,
-            task_d_model=self.config.model.task_d_model,
-            task_nhead=self.config.model.task_nhead,
-            task_num_layers=self.config.model.task_num_layers,
-            attention_dim=self.config.model.attention_dim,
-            dropout=self.config.model.dropout,
-            max_seq_len=self.seq_config.max_seq_len,
-            max_tasks=self.seq_config.max_tasks,
-            max_segments=self.seq_config.max_segments,
-            use_gradient_checkpointing=self.config.device.use_gradient_checkpointing,
+        # 使用 from_config 创建模型
+        model = HierarchicalTransformerNetwork.from_config(
+            config=self.config,
+            seq_config=self.seq_config,
             num_classes=num_classes,
         )
         model = model.to(self.device)

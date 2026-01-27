@@ -88,27 +88,12 @@ class CADTTrainer:
         logger.info(f'设备: {self.device}')
 
     def _create_model(self) -> CADTTransformerModel:
-        """创建 CADT 模型"""
-        # 为 CADT 创建临时的配置字典传递给模型
-        model_config = {
-            'input_dim': self.config.model.input_dim,
-            'segment_d_model': self.config.model.segment_d_model,
-            'segment_nhead': self.config.model.segment_nhead,
-            'segment_num_layers': self.config.model.segment_num_layers,
-            'task_d_model': self.config.model.task_d_model,
-            'task_nhead': self.config.model.task_nhead,
-            'task_num_layers': self.config.model.task_num_layers,
-            'attention_dim': self.config.model.attention_dim,
-            'dropout': self.config.model.dropout,
-            'max_seq_len': self.seq_config.max_seq_len,
-            'max_tasks': self.seq_config.max_tasks,
-            'max_segments': self.seq_config.max_segments,
-            'num_classes': self.config.task.num_classes,
-            'use_gradient_checkpointing': self.config.device.use_gradient_checkpointing,
-            'task_type': self.config.task.type,
-        }
-
-        model = CADTTransformerModel(model_config)
+        """创建 CADT 模型（使用 from_config 方法）"""
+        # 使用 from_config 创建模型
+        model = CADTTransformerModel.from_config(
+            config=self.config,
+            seq_config=self.seq_config,
+        )
         model = model.to(self.device)
 
         # 统计参数量
