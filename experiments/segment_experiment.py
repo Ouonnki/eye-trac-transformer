@@ -280,7 +280,7 @@ def run_2x2_experiment(
 def main():
     """主函数"""
     # 加载配置
-    config = UnifiedConfig.load('configs/default.json')
+    config = UnifiedConfig.from_json('configs/default.json')
 
     # 修改输出目录
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
