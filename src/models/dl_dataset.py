@@ -307,7 +307,7 @@ class HierarchicalGazeDataset(Dataset):
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
-    DataLoader的collate函数
+    DataLoader的collate函数（被试级数据集）
 
     Args:
         batch: 样本列表
@@ -323,4 +323,125 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'task_mask': torch.stack([b['task_mask'] for b in batch]),
         'label': torch.stack([b['label'] for b in batch]),
         'subject_ids': [b['subject_id'] for b in batch],
+    }
+
+
+class SegmentGazeDataset(Dataset):
+    """
+    片段级眼动数据集
+
+    将每个被试的每个片段作为独立样本。
+    相比被试级数据集，样本量大幅增加（被试×任务×片段）。
+
+    返回格式：
+    - features: (max_seq_len, input_dim) 眼动序列
+    - length: 实际序列长度
+    - label: 被试标签（分数/类别）
+    - subject_id: 被试ID（用于推理时聚合）
+    - task_id: 任务ID（可选，用于添加任务嵌入）
+    """
+
+    def __init__(
+        self,
+        subjects: List[SubjectData],
+        config: SequenceConfig,
+        feature_extractor: Optional[SequenceFeatureExtractor] = None,
+        fit_normalizer: bool = False,
+    ):
+        """
+        初始化片段级数据集
+
+        Args:
+            subjects: 被试数据列表
+            config: 序列配置
+            feature_extractor: 特征提取器（如果为None则创建新的）
+            fit_normalizer: 是否在当前数据上拟合归一化器
+        """
+        self.subjects = subjects
+        self.config = config
+        self.feature_extractor = feature_extractor or SequenceFeatureExtractor(config)
+
+        # 预提取所有特征并展平为片段级
+        self._precompute_segment_features()
+
+        # 拟合归一化器
+        if fit_normalizer:
+            self._fit_normalizer()
+
+    def _precompute_segment_features(self) -> None:
+        """预计算所有被试的特征并展平为片段级"""
+        self.segments = []
+        self.segment_labels = []
+        self.segment_subject_ids = []
+        self.segment_task_ids = []
+
+        for subject in self.subjects:
+            label = subject.total_score
+            subject_id = subject.subject_id
+
+            for trial in subject.trials[:self.config.max_tasks]:
+                task_id = trial.task_id
+
+                for segment in trial.segments[:self.config.max_segments]:
+                    # 提取序列特征
+                    features = self.feature_extractor.extract(segment.gaze_points)
+
+                    # 只保留有效片段（至少有2个点）
+                    if len(features) >= 2:
+                        self.segments.append(features)
+                        self.segment_labels.append(label)
+                        self.segment_subject_ids.append(subject_id)
+                        self.segment_task_ids.append(task_id)
+
+        logger.info(f'片段级数据集创建完成: {len(self.segments)} 个片段, '
+                   f'{len(set(self.segment_subject_ids))} 个被试')
+
+    def _fit_normalizer(self) -> None:
+        """在当前数据上拟合归一化器"""
+        all_features = [f for f in self.segments if len(f) > 0]
+        if all_features:
+            self.feature_extractor.fit_normalization(all_features)
+
+            # 应用归一化
+            for i, features in enumerate(self.segments):
+                if len(features) > 0:
+                    self.segments[i] = self.feature_extractor.normalize(features)
+
+    def __len__(self) -> int:
+        return len(self.segments)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        features = self.segments[idx]
+        seq_len = min(len(features), self.config.max_seq_len)
+
+        # 填充或截断到 max_seq_len
+        padded = np.zeros((self.config.max_seq_len, self.config.input_dim), dtype=np.float32)
+        if seq_len > 0:
+            padded[:seq_len, :] = features[:seq_len]
+
+        return {
+            'features': torch.from_numpy(padded),
+            'length': seq_len,
+            'label': torch.tensor(self.segment_labels[idx], dtype=torch.float32),
+            'subject_id': self.segment_subject_ids[idx],
+            'task_id': self.segment_task_ids[idx],
+        }
+
+
+def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    """
+    片段级数据集的 DataLoader collate 函数
+
+    Args:
+        batch: 样本列表
+
+    Returns:
+        批次数据字典
+    """
+    return {
+        'features': torch.stack([b['features'] for b in batch]),
+        'length': torch.tensor([b['length'] for b in batch], dtype=torch.long),
+        'label': torch.stack([b['label'] for b in batch]),
+        'subject_ids': [b['subject_id'] for b in batch],
+        'task_ids': [b['task_id'] for b in batch],
     }
