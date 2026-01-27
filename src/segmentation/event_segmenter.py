@@ -16,7 +16,7 @@ from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 
-from src.data.schemas import GazePoint, SearchSegment, TaskConfig
+from src.data.schemas import ClickPoint, GazePoint, SearchSegment, TaskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class EventSegmenter:
 
     def segment(
         self,
-        click_points: List[GazePoint],
+        clicks: List[ClickPoint],
         gaze_trajectory: Optional[List[GazePoint]] = None,
     ) -> List[SearchSegment]:
         """
@@ -75,20 +75,20 @@ class EventSegmenter:
         3. 片段包含起始点击、期间眼动点和目标点击
 
         Args:
-            click_points: 点击点列表
+            clicks: 点击事件列表
             gaze_trajectory: 连续眼动轨迹列表（可选）
 
         Returns:
             搜索片段列表
         """
-        if not click_points:
+        if not clicks:
             return []
 
         # 按时间排序点击事件
-        clicks = sorted(click_points, key=lambda p: p.timestamp)
+        sorted_clicks = sorted(clicks, key=lambda p: p.timestamp)
 
-        if len(clicks) < 2:
-            logger.warning(f"点击数量不足: {len(clicks)}")
+        if len(sorted_clicks) < 2:
+            logger.warning(f"点击数量不足: {len(sorted_clicks)}")
             return []
 
         # 预排序眼动轨迹（如果有）
@@ -101,12 +101,12 @@ class EventSegmenter:
         clicked_positions: List[Tuple[float, float]] = []
 
         # 为每对相邻点击创建搜索片段
-        for i in range(len(clicks) - 1):
-            prev_click = clicks[i]
-            curr_click = clicks[i + 1]
+        for i in range(len(sorted_clicks) - 1):
+            prev_click = sorted_clicks[i]
+            curr_click = sorted_clicks[i + 1]
 
             # 获取目标位置
-            target_pos = (curr_click.x, curr_click.y)
+            target_pos = self._get_target_position(curr_click)
 
             # 提取期间的眼动轨迹
             if gaze_sorted:
@@ -114,16 +114,19 @@ class EventSegmenter:
                     gaze_sorted, prev_click.timestamp, curr_click.timestamp
                 )
                 # 片段包含：起始点击 + 中间眼动 + 目标点击
-                segment_points = [prev_click] + intermediate_gaze + [curr_click]
+                segment_gaze_points = self._merge_clicks_and_gaze(prev_click, intermediate_gaze, curr_click)
             else:
-                # 无眼动数据时只包含两个点击
-                segment_points = [prev_click, curr_click]
+                # 无眼动数据时只包含两个点击（转换为 GazePoint）
+                segment_gaze_points = [
+                    GazePoint(timestamp=prev_click.timestamp, x=prev_click.x, y=prev_click.y),
+                    GazePoint(timestamp=curr_click.timestamp, x=curr_click.x, y=curr_click.y),
+                ]
 
             segment = SearchSegment(
                 segment_id=i,
-                start_number=i + 1,
-                target_number=i + 2,
-                gaze_points=segment_points,
+                start_number=prev_click.target_number,
+                target_number=curr_click.target_number,
+                gaze_points=segment_gaze_points,
                 start_time=prev_click.timestamp,
                 end_time=curr_click.timestamp,
                 target_position=target_pos,
@@ -159,10 +162,48 @@ class EventSegmenter:
         """
         return [
             p for p in gaze_points
-            if start_time < p.timestamp < end_time and not p.is_click
+            if start_time < p.timestamp < end_time
         ]
 
-    def _get_target_position(self, click: GazePoint) -> Tuple[float, float]:
+    def _merge_clicks_and_gaze(
+        self,
+        start_click: ClickPoint,
+        gaze_points: List[GazePoint],
+        end_click: ClickPoint,
+    ) -> List[GazePoint]:
+        """
+        合并点击和眼动轨迹点
+
+        Args:
+            start_click: 起始点击
+            gaze_points: 中间眼动点
+            end_click: 结束点击
+
+        Returns:
+            合并后的眼动点列表（含点击）
+        """
+        points = []
+
+        # 起始点击转为 GazePoint
+        points.append(GazePoint(
+            timestamp=start_click.timestamp,
+            x=start_click.x,
+            y=start_click.y,
+        ))
+
+        # 中间眼动点
+        points.extend(gaze_points)
+
+        # 结束点击转为 GazePoint
+        points.append(GazePoint(
+            timestamp=end_click.timestamp,
+            x=end_click.x,
+            y=end_click.y,
+        ))
+
+        return points
+
+    def _get_target_position(self, click: ClickPoint) -> Tuple[float, float]:
         """
         获取目标位置
 
@@ -174,7 +215,7 @@ class EventSegmenter:
         Returns:
             目标位置 (x, y)
         """
-        if click.target_number is not None and click.target_number in self.grid_layout:
+        if click.target_number in self.grid_layout:
             return self.grid_layout[click.target_number]
         # 使用点击坐标作为近似
         return (click.x, click.y)
@@ -231,7 +272,7 @@ class EventSegmenter:
 
     @staticmethod
     def calculate_grid_layout_from_clicks(
-        clicks: List[GazePoint],
+        clicks: List[ClickPoint],
     ) -> Dict[int, Tuple[float, float]]:
         """
         从点击坐标推断网格布局
@@ -244,8 +285,7 @@ class EventSegmenter:
         """
         layout = {}
         for click in clicks:
-            if click.target_number is not None:
-                layout[click.target_number] = (click.x, click.y)
+            layout[click.target_number] = (click.x, click.y)
         return layout
 
 
@@ -258,7 +298,7 @@ class AdaptiveSegmenter(EventSegmenter):
 
     def segment(
         self,
-        click_points: List[GazePoint],
+        clicks: List[ClickPoint],
         gaze_trajectory: Optional[List[GazePoint]] = None,
     ) -> List[SearchSegment]:
         """
@@ -266,12 +306,9 @@ class AdaptiveSegmenter(EventSegmenter):
 
         如果网格布局不完整，从点击坐标学习
         """
-        # 提取点击事件
-        clicks = [p for p in click_points if p.is_click and p.target_number is not None]
-
         # 如果网格布局不完整，从点击坐标补充
         for click in clicks:
             if click.target_number not in self.grid_layout:
                 self.grid_layout[click.target_number] = (click.x, click.y)
 
-        return super().segment(click_points, gaze_trajectory)
+        return super().segment(clicks, gaze_trajectory)

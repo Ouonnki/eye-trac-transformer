@@ -23,6 +23,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.loader import DataLoader as GazeDataLoader
+from src.data.schemas import ClickPoint
 from src.data.preprocessor import GazePreprocessor
 from src.segmentation.event_segmenter import AdaptiveSegmenter
 
@@ -97,15 +98,14 @@ def diagnose_single_subject(
         # 2. 预处理
         preprocessor.preprocess_trial(trial)
 
-        # 获取点击点数量（来自 raw_gaze_points，即 sheet3）
-        click_points = trial.raw_gaze_points
+        # 获取点击点数量（点击和眼动轨迹现在分离存储）
+        click_points = trial.clicks
         if click_points:
-            clicks_with_flag = [p for p in click_points if p.is_click]
-            task_info['click_points_after_preprocess'] = len(clicks_with_flag)
-            result['total_click_points'] += len(clicks_with_flag)
+            task_info['click_points_after_preprocess'] = len(click_points)
+            result['total_click_points'] += len(click_points)
 
         # 获取眼动轨迹
-        gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
+        gaze_trajectory = trial.gaze_points
 
         if not click_points:
             result['tasks'].append(task_info)

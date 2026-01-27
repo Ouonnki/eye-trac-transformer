@@ -13,7 +13,8 @@ from typing import List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-from .schemas import GazePoint, TaskTrial
+from .schemas import ClickPoint, GazePoint, TaskTrial
+from ..utils.geometry import distance
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class GazePreprocessor:
     """
     眼动数据预处理器
 
-    负责将原始 DataFrame 转换为 GazePoint 列表
+    负责将原始 DataFrame 转换为 ClickPoint 和 GazePoint 列表
     """
 
     def __init__(
@@ -58,51 +59,37 @@ class GazePreprocessor:
         Returns:
             预处理后的 TaskTrial 对象
         """
-        # 处理点击数据
+        # 处理点击数据（sheet3）
         if hasattr(trial, '_raw_click_df') and trial._raw_click_df is not None:
-            click_points = self.preprocess(trial._raw_click_df, is_click_data=True)
-            trial.raw_gaze_points = click_points
+            trial.clicks = self._preprocess_clicks(trial._raw_click_df)
             delattr(trial, '_raw_click_df')
         elif hasattr(trial, '_raw_df') and trial._raw_df is not None:
             # 兼容旧格式
-            click_points = self.preprocess(trial._raw_df, is_click_data=True)
-            trial.raw_gaze_points = click_points
+            trial.clicks = self._preprocess_clicks(trial._raw_df)
             delattr(trial, '_raw_df')
 
-        # 处理眼动轨迹数据
+        # 处理眼动轨迹数据（sheet4）
         if hasattr(trial, '_raw_gaze_df') and trial._raw_gaze_df is not None:
             gaze_df = trial._raw_gaze_df
             if not gaze_df.empty:
-                gaze_points = self.preprocess_gaze_trajectory(gaze_df)
-                trial.gaze_trajectory = gaze_points
+                trial.gaze_points = self._preprocess_gaze_trajectory(gaze_df)
             else:
-                trial.gaze_trajectory = []
+                trial.gaze_points = []
             delattr(trial, '_raw_gaze_df')
-        else:
-            trial.gaze_trajectory = []
 
         return trial
 
-    def preprocess(
-        self, df: pd.DataFrame, is_click_data: bool = False
-    ) -> List[GazePoint]:
+    def _preprocess_clicks(self, df: pd.DataFrame) -> List[ClickPoint]:
         """
-        预处理原始眼动数据
-
-        处理步骤:
-        1. 解析时间戳
-        2. 清洗坐标值
-        3. 识别点击事件
-        4. 转换为 GazePoint 对象
+        预处理点击数据
 
         Args:
-            df: 原始 DataFrame，包含列 [时间, 正确, 坐标X, 坐标Y]
-            is_click_data: 是否为点击数据（所有行都是点击事件）
+            df: 点击数据 DataFrame，包含列 [时间, 正确, 坐标X, 坐标Y]
 
         Returns:
-            GazePoint 列表
+            ClickPoint 列表
         """
-        gaze_points = []
+        clicks = []
 
         # 确定列名
         time_col = self._find_column(df, ['时间', 'Timestamp', 'Time'])
@@ -111,8 +98,8 @@ class GazePreprocessor:
         correct_col = self._find_column(df, ['正确', 'Correct', 'correct'])
 
         if time_col is None or x_col is None or y_col is None:
-            logger.warning("无法找到必要的列")
-            return gaze_points
+            logger.warning("点击数据缺少必要的列")
+            return clicks
 
         click_number = 0  # 当前点击的目标数字
 
@@ -126,35 +113,24 @@ class GazePreprocessor:
             x = self._clean_coordinate(row[x_col], self.screen_width)
             y = self._clean_coordinate(row[y_col], self.screen_height)
 
-            # 3. 识别点击事件
-            if is_click_data:
-                # 点击数据：所有行都是点击事件
-                click_number += 1
-                is_click = True
-                target_number = click_number
+            # 3. 确定目标数字
+            click_number += 1
+            if correct_col is not None:
+                target_number = self._parse_target_number(row.get(correct_col), click_number)
             else:
-                is_click, target_number = self._detect_click_event(
-                    row, correct_col, click_number
-                )
-                if is_click and target_number is not None:
-                    click_number = target_number
+                target_number = click_number
 
-            point = GazePoint(
+            clicks.append(ClickPoint(
                 timestamp=timestamp,
                 x=x,
                 y=y,
-                is_click=is_click,
-                target_number=target_number if is_click else None,
-            )
-            gaze_points.append(point)
+                target_number=target_number,
+            ))
 
-        logger.debug(
-            f"预处理完成: {len(gaze_points)} 个点, "
-            f"{sum(1 for p in gaze_points if p.is_click)} 个点击"
-        )
-        return gaze_points
+        logger.debug(f"点击数据预处理完成: {len(clicks)} 个点击")
+        return clicks
 
-    def preprocess_gaze_trajectory(self, df: pd.DataFrame) -> List[GazePoint]:
+    def _preprocess_gaze_trajectory(self, df: pd.DataFrame) -> List[GazePoint]:
         """
         预处理连续眼动轨迹数据（sheet4）
 
@@ -162,7 +138,7 @@ class GazePreprocessor:
             df: 眼动轨迹 DataFrame，列：[时间, 坐标X, 坐标Y]
 
         Returns:
-            GazePoint 列表（所有点的 is_click=False）
+            GazePoint 列表
         """
         gaze_points = []
 
@@ -188,14 +164,11 @@ class GazePreprocessor:
             except (ValueError, TypeError):
                 continue
 
-            point = GazePoint(
+            gaze_points.append(GazePoint(
                 timestamp=timestamp,
                 x=x,
                 y=y,
-                is_click=False,
-                target_number=None,
-            )
-            gaze_points.append(point)
+            ))
 
         logger.debug(f"眼动轨迹预处理完成: {len(gaze_points)} 个注视点")
         return gaze_points
@@ -268,54 +241,34 @@ class GazePreprocessor:
         # 裁剪到有效范围
         return max(0.0, min(val, float(max_value)))
 
-    def _detect_click_event(
-        self,
-        row: pd.Series,
-        correct_col: Optional[str],
-        current_number: int
-    ) -> Tuple[bool, Optional[int]]:
+    def _parse_target_number(self, correct_value, current_number: int) -> int:
         """
-        检测点击事件
-
-        策略：
-        1. 如果"正确"列有有效值，则为点击事件
-        2. 目标数字从正确列推断，或递增
+        解析目标数字
 
         Args:
-            row: 数据行
-            correct_col: "正确"列名
-            current_number: 当前已点击的数字
+            correct_value: "正确"列的值
+            current_number: 当前序号
 
         Returns:
-            (is_click, target_number) 元组
+            目标数字
         """
-        if correct_col is None:
-            return False, None
-
-        correct_value = row.get(correct_col)
-
-        # 检查是否为有效点击
         if pd.isna(correct_value) or correct_value == '':
-            return False, None
+            return current_number
 
-        # 尝试解析目标数字
         try:
             if isinstance(correct_value, (int, float)):
-                target_number = int(correct_value)
+                return int(correct_value)
             elif isinstance(correct_value, str):
-                # 可能是 "正确" 或数字
                 if correct_value.isdigit():
-                    target_number = int(correct_value)
+                    return int(correct_value)
                 elif correct_value in ('正确', 'true', 'True', '1'):
-                    target_number = current_number + 1
+                    return current_number
                 else:
-                    target_number = current_number + 1
+                    return current_number
             else:
-                target_number = current_number + 1
+                return current_number
         except (ValueError, TypeError):
-            target_number = current_number + 1
-
-        return True, target_number
+            return current_number
 
 
 class GazeDataCleaner:
@@ -354,14 +307,12 @@ class GazeDataCleaner:
             if dt <= 0:
                 continue
 
-            # 计算距离
-            dist = prev.distance_to(curr)
-
-            # 计算速度
+            # 计算距离和速度
+            dist = distance((prev.x, prev.y), (curr.x, curr.y))
             velocity = dist / dt
 
-            # 如果速度正常或是点击事件，保留该点
-            if velocity <= velocity_threshold or curr.is_click:
+            # 如果速度正常，保留该点
+            if velocity <= velocity_threshold:
                 cleaned.append(curr)
 
         return cleaned
@@ -394,7 +345,7 @@ class GazeDataCleaner:
             dt_ms = (curr.timestamp - prev.timestamp).total_seconds() * 1000
 
             # 如果间隙过大，插入中间点
-            if dt_ms > max_gap_ms and not curr.is_click:
+            if dt_ms > max_gap_ms:
                 num_points = int(dt_ms / max_gap_ms)
                 for j in range(1, num_points):
                     ratio = j / num_points
@@ -407,7 +358,6 @@ class GazeDataCleaner:
                         timestamp=new_time,
                         x=new_x,
                         y=new_y,
-                        is_click=False,
                     ))
 
             interpolated.append(curr)

@@ -7,36 +7,39 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple
+
+
+@dataclass
+class ClickPoint:
+    """
+    点击事件
+
+    Attributes:
+        timestamp: 时间戳
+        x: X坐标（像素）
+        y: Y坐标（像素）
+        target_number: 点击的目标数字
+    """
+    timestamp: datetime
+    x: float
+    y: float
+    target_number: int
 
 
 @dataclass
 class GazePoint:
     """
-    单个眼动点
+    眼动轨迹点
 
     Attributes:
-        timestamp: 时间戳（毫秒级精度）
+        timestamp: 时间戳
         x: X坐标（像素）
         y: Y坐标（像素）
-        is_click: 是否为点击事件
-        target_number: 点击的目标数字（仅点击事件有值）
     """
     timestamp: datetime
     x: float
     y: float
-    is_click: bool = False
-    target_number: Optional[int] = None
-
-    def distance_to(self, other: 'GazePoint') -> float:
-        """计算到另一个点的欧氏距离"""
-        import math
-        return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
-
-    def distance_to_position(self, pos: Tuple[float, float]) -> float:
-        """计算到指定位置的欧氏距离"""
-        import math
-        return math.sqrt((self.x - pos[0]) ** 2 + (self.y - pos[1]) ** 2)
 
 
 @dataclass
@@ -113,28 +116,30 @@ class TaskTrial:
         subject_id: 被试编号
         task_id: 题目编号
         config: 任务配置
+        clicks: 点击事件列表
+        gaze_points: 眼动轨迹点列表
         segments: 搜索片段列表
-        raw_gaze_points: 原始眼动点列表
     """
     subject_id: str
     task_id: int
     config: TaskConfig
+    clicks: List[ClickPoint] = field(default_factory=list)
+    gaze_points: List[GazePoint] = field(default_factory=list)
     segments: List[SearchSegment] = field(default_factory=list)
-    raw_gaze_points: List[GazePoint] = field(default_factory=list)
 
     @property
     def total_duration_ms(self) -> float:
         """任务总时长（毫秒）"""
-        if not self.raw_gaze_points:
+        if not self.gaze_points:
             return 0.0
-        start = self.raw_gaze_points[0].timestamp
-        end = self.raw_gaze_points[-1].timestamp
+        start = self.gaze_points[0].timestamp
+        end = self.gaze_points[-1].timestamp
         return (end - start).total_seconds() * 1000
 
     @property
     def click_count(self) -> int:
         """点击次数"""
-        return sum(1 for p in self.raw_gaze_points if p.is_click)
+        return len(self.clicks)
 
 
 @dataclass
@@ -157,103 +162,3 @@ class SubjectData:
     def trial_count(self) -> int:
         """完成的任务数量"""
         return len(self.trials)
-
-
-@dataclass
-class MicroFeatures:
-    """
-    微观特征（片段级）
-
-    Attributes:
-        search_efficiency_ratio: 搜索效率比
-        fixation_entropy: 注视熵
-        hesitation_time: 犹豫度（毫秒）
-        revisit_count: 回视次数
-        path_length: 实际路径长度
-        euclidean_distance: 欧氏距离
-        duration_ms: 持续时间
-        gaze_point_count: 眼动点数量
-        velocity_mean: 平均速度
-        direction_changes: 方向变化次数
-    """
-    search_efficiency_ratio: float = 1.0
-    fixation_entropy: float = 0.0
-    hesitation_time: float = 0.0
-    revisit_count: int = 0
-    path_length: float = 0.0
-    euclidean_distance: float = 0.0
-    duration_ms: float = 0.0
-    gaze_point_count: int = 0
-    velocity_mean: float = 0.0
-    direction_changes: int = 0
-
-    def to_dict(self) -> Dict[str, float]:
-        """转换为字典"""
-        return {
-            'search_efficiency_ratio': self.search_efficiency_ratio,
-            'fixation_entropy': self.fixation_entropy,
-            'hesitation_time': self.hesitation_time,
-            'revisit_count': float(self.revisit_count),
-            'path_length': self.path_length,
-            'euclidean_distance': self.euclidean_distance,
-            'duration_ms': self.duration_ms,
-            'gaze_point_count': float(self.gaze_point_count),
-            'velocity_mean': self.velocity_mean,
-            'direction_changes': float(self.direction_changes),
-        }
-
-
-@dataclass
-class MesoFeatures:
-    """
-    中观特征（任务级）
-    """
-    efficiency_mean: float = 0.0
-    efficiency_std: float = 0.0
-    efficiency_median: float = 0.0
-    efficiency_max: float = 0.0
-    efficiency_min: float = 0.0
-    entropy_mean: float = 0.0
-    entropy_std: float = 0.0
-    total_duration: float = 0.0
-    duration_mean: float = 0.0
-    duration_std: float = 0.0
-    hesitation_mean: float = 0.0
-    hesitation_ratio: float = 0.0
-    revisit_total: int = 0
-    revisit_mean: float = 0.0
-    velocity_mean: float = 0.0
-    velocity_std: float = 0.0
-    total_path_length: float = 0.0
-    total_euclidean: float = 0.0
-    distraction_cost: float = 0.0
-    has_distractor: int = 0
-    grid_size: int = 25
-    distractor_count: int = 0
-
-    def to_dict(self) -> Dict[str, float]:
-        """转换为字典"""
-        return {
-            'efficiency_mean': self.efficiency_mean,
-            'efficiency_std': self.efficiency_std,
-            'efficiency_median': self.efficiency_median,
-            'efficiency_max': self.efficiency_max,
-            'efficiency_min': self.efficiency_min,
-            'entropy_mean': self.entropy_mean,
-            'entropy_std': self.entropy_std,
-            'total_duration': self.total_duration,
-            'duration_mean': self.duration_mean,
-            'duration_std': self.duration_std,
-            'hesitation_mean': self.hesitation_mean,
-            'hesitation_ratio': self.hesitation_ratio,
-            'revisit_total': float(self.revisit_total),
-            'revisit_mean': self.revisit_mean,
-            'velocity_mean': self.velocity_mean,
-            'velocity_std': self.velocity_std,
-            'total_path_length': self.total_path_length,
-            'total_euclidean': self.total_euclidean,
-            'distraction_cost': self.distraction_cost,
-            'has_distractor': float(self.has_distractor),
-            'grid_size': float(self.grid_size),
-            'distractor_count': float(self.distractor_count),
-        }
