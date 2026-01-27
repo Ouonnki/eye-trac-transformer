@@ -207,7 +207,7 @@ def run_2x2_experiment(
     splitter = TwoByTwoSplitter(
         train_subjects=config.experiment.train_subjects,
         train_tasks=config.experiment.train_tasks,
-        random_state=config.experiment.random_state,
+        random_state=config.experiment.random_seed,
     )
 
     # 执行划分
