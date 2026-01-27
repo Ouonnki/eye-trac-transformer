@@ -12,16 +12,13 @@ import torch
 import torch.nn as nn
 
 from src.config import ModelConfig
-from src.models.base import BaseModel
-from src.models.attention import PositionalEncoding
-from src.models.dl_dataset import SequenceConfig
 from src.models.encoders import GazeTransformerEncoder
 from src.models.heads import PredictionHead
 
 logger = logging.getLogger(__name__)
 
 
-class SegmentEncoder(BaseModel):
+class SegmentEncoder(nn.Module):
     """
     片段级编码器
 
