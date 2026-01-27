@@ -18,6 +18,7 @@ import sys
 import logging
 import json
 import pickle
+import argparse
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -205,20 +206,41 @@ def run_2x2_experiment(
 
 def main():
     """主函数"""
+    parser = argparse.ArgumentParser(description='片段级Transformer实验')
+    parser.add_argument('--config', type=str, default='configs/default.json',
+                        help='配置文件路径')
+    parser.add_argument('--data', type=str, default='data/processed/processed_data.pkl',
+                        help='预处理数据路径')
+    parser.add_argument('--output', type=str, default=None,
+                        help='输出目录（默认为 outputs/segment_models/<timestamp>）')
+    parser.add_argument('--device', type=str, default=None,
+                        help='设备 (cpu/cuda/mps)，默认自动检测')
+    args = parser.parse_args()
+
     # 加载配置
-    config = UnifiedConfig.from_json('configs/default.json')
+    config = UnifiedConfig.from_json(args.config)
+
+    # 覆盖设备设置
+    if args.device:
+        config.device.device = args.device
 
     # 修改输出目录
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    config.experiment.output_dir = f'outputs/segment_models/{timestamp}'
+    if args.output:
+        config.experiment.output_dir = args.output
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        config.experiment.output_dir = f'outputs/segment_models/{timestamp}'
 
     # 序列配置（数据属性，使用默认值）
     seq_config = SequenceConfig()
 
-    logger.info(f'配置: {config.to_dict()}')
+    logger.info(f'配置文件: {args.config}')
+    logger.info(f'数据路径: {args.data}')
+    logger.info(f'设备: {config.device.device}')
+    logger.info(f'输出目录: {config.experiment.output_dir}')
 
     # 加载数据
-    data_path = 'data/processed/processed_data.pkl'
+    data_path = args.data
     if not os.path.exists(data_path):
         logger.error(f'预处理数据不存在: {data_path}')
         logger.info('请先运行 scripts/preprocess_data.py')

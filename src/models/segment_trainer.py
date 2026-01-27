@@ -425,7 +425,7 @@ class SegmentTrainer:
                 self._save_checkpoint(fold, epoch)
 
             # 早停检查
-            if epoch - best_epoch >= self.config.training.early_stopping_patience:
+            if epoch - best_epoch >= self.config.training.patience:
                 logger.info(f'早停触发于 Epoch {epoch + 1}')
                 break
 
