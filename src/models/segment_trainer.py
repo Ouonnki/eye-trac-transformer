@@ -25,6 +25,7 @@ from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score
 )
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from src.models.segment_model import SegmentEncoder
 from src.models.dl_dataset import SegmentGazeDataset, segment_collate_fn, SequenceConfig
@@ -422,7 +423,7 @@ class SegmentTrainer:
                     best_val_metric = val_metrics['accuracy']
                 else:
                     best_val_metric = val_metrics['r2']
-                self._save_checkpoint(fold, epoch)
+                self._save_best_model(fold)
 
             # 早停检查
             if epoch - best_epoch >= self.config.training.patience:
@@ -431,12 +432,14 @@ class SegmentTrainer:
 
         logger.info(f'训练完成. Best Val Loss: {best_val_loss:.4f} @ Epoch {best_epoch + 1}')
 
+        # 绘制训练曲线
+        self._plot_training_history(fold)
+
         return {'best_val_loss': best_val_loss, 'best_val_metric': best_val_metric}
 
-    def _save_checkpoint(self, fold: int, epoch: int) -> None:
-        """保存模型检查点"""
+    def _save_best_model(self, fold: int) -> None:
+        """保存最佳模型"""
         checkpoint = {
-            'epoch': epoch,
             'model_state_dict': self.model.module.state_dict() if hasattr(self.model, 'module') else self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
@@ -445,9 +448,54 @@ class SegmentTrainer:
 
         path = os.path.join(
             self.config.experiment.output_dir,
-            f'segment_model_fold{fold}_epoch{epoch}.pt'
+            f'best_model_fold{fold}.pt'
         )
         torch.save(checkpoint, path)
+
+    def _plot_training_history(self, fold: int) -> None:
+        """绘制训练历史曲线"""
+        if not self.history['train_loss']:
+            return
+
+        epochs = range(1, len(self.history['train_loss']) + 1)
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # 损失曲线
+        axes[0].plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', linewidth=2)
+        axes[0].plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', linewidth=2)
+        axes[0].set_xlabel('Epoch', fontsize=12)
+        axes[0].set_ylabel('Loss', fontsize=12)
+        axes[0].set_title('Training and Validation Loss', fontsize=14)
+        axes[0].legend(fontsize=11)
+        axes[0].grid(True, alpha=0.3)
+
+        # 指标曲线
+        if self.config.task.type == 'classification':
+            axes[1].plot(epochs, self.history['val_accuracy'], 'g-', label='Accuracy', linewidth=2)
+            axes[1].plot(epochs, self.history['val_f1'], 'orange', label='F1 Score', linewidth=2)
+            axes[1].set_xlabel('Epoch', fontsize=12)
+            axes[1].set_ylabel('Score', fontsize=12)
+            axes[1].set_title('Validation Metrics', fontsize=14)
+            axes[1].legend(fontsize=11)
+            axes[1].grid(True, alpha=0.3)
+        else:
+            axes[1].plot(epochs, self.history['val_r2'], 'g-', label='R²', linewidth=2)
+            axes[1].plot(epochs, self.history['val_mae'], 'orange', label='MAE', linewidth=2)
+            axes[1].set_xlabel('Epoch', fontsize=12)
+            axes[1].set_ylabel('Score', fontsize=12)
+            axes[1].set_title('Validation Metrics', fontsize=14)
+            axes[1].legend(fontsize=11)
+            axes[1].grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        fig_path = os.path.join(
+            self.config.experiment.output_dir,
+            f'training_history_fold{fold}.png'
+        )
+        plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f'训练曲线已保存: {fig_path}')
 
     def load_model(self, model_path: str) -> None:
         """加载模型"""
