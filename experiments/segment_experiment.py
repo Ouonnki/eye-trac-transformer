@@ -116,8 +116,9 @@ def create_segment_dataset_from_split(
 
         subject = SubjectData(
             subject_id=subject_dict['subject_id'],
-            trials=trials,
             total_score=subject_dict['label'],
+            category=subject_dict.get('category', 2),  # 默认中分组
+            trials=trials,
         )
         subjects.append(subject)
 
