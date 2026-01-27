@@ -11,7 +11,6 @@ from dataclasses import dataclass
 import copy
 
 import numpy as np
-from sklearn.model_selection import KFold
 
 logger = logging.getLogger(__name__)
 
@@ -287,75 +286,3 @@ class TwoByTwoSplitter:
         }
 
         return summary
-
-
-class KFoldSplitter:
-    """
-    K-Fold 交叉验证划分器
-
-    按被试划分，保持与原有实现兼容。
-    """
-
-    def __init__(
-        self,
-        n_splits: int = 5,
-        random_state: int = 42,
-    ):
-        """
-        初始化
-
-        Args:
-            n_splits: 折数
-            random_state: 随机种子
-        """
-        self.n_splits = n_splits
-        self.random_state = random_state
-        self.kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-
-    def split(self, data: List[Dict]) -> List[Tuple[List[Dict], List[Dict]]]:
-        """
-        执行 K-Fold 划分
-
-        Args:
-            data: 预处理后的数据列表
-
-        Returns:
-            [(train_data, val_data), ...] 的列表
-        """
-        subject_ids = np.array([d['subject_id'] for d in data])
-        subject_dict = {d['subject_id']: d for d in data}
-
-        splits = []
-        for train_idx, val_idx in self.kf.split(subject_ids):
-            train_ids = subject_ids[train_idx]
-            val_ids = subject_ids[val_idx]
-
-            train_data = [subject_dict[sid] for sid in train_ids]
-            val_data = [subject_dict[sid] for sid in val_ids]
-
-            splits.append((train_data, val_data))
-
-        return splits
-
-
-def create_splitter(config) -> object:
-    """
-    根据配置创建划分器
-
-    Args:
-        config: ExperimentConfig 实例
-
-    Returns:
-        TwoByTwoSplitter 或 KFoldSplitter 实例
-    """
-    if config.split_type == '2x2':
-        return TwoByTwoSplitter(
-            train_subjects=config.train_subjects,
-            train_tasks=config.train_tasks,
-            random_state=config.random_seed,
-        )
-    else:
-        return KFoldSplitter(
-            n_splits=config.n_folds,
-            random_state=config.random_seed,
-        )

@@ -30,10 +30,10 @@ from tqdm import tqdm
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.dl_dataset import SequenceConfig, create_subject_splits, collate_fn
+from src.models.dl_dataset import SequenceConfig, collate_fn
 from src.models.dl_trainer import TrainingConfig, DeepLearningTrainer
 from experiments.experiment_config import ExperimentConfig
-from src.data.split_strategy import TwoByTwoSplitter, KFoldSplitter
+from src.data.split_strategy import TwoByTwoSplitter
 
 # 配置日志
 logging.basicConfig(
@@ -191,138 +191,6 @@ def load_processed_data(data_path: str) -> List[Dict]:
         data = pickle.load(f)
     logger.info(f'Loaded {len(data)} subjects')
     return data
-
-
-def run_cross_validation(
-    data: List[Dict],
-    config: TrainingConfig,
-    n_splits: int = 5,
-) -> Dict:
-    """运行交叉验证"""
-    logger.info(f'Running {n_splits}-fold cross-validation...')
-
-    # 获取被试ID列表
-    subject_ids = [d['subject_id'] for d in data]
-    subject_dict = {d['subject_id']: d for d in data}
-
-    # 创建交叉验证划分
-    splits = create_subject_splits(subject_ids, n_splits=n_splits, random_state=42)
-
-    # 序列配置
-    seq_config = SequenceConfig(
-        max_seq_len=config.max_seq_len,
-        max_tasks=config.max_tasks,
-        max_segments=config.max_segments,
-        input_dim=config.input_dim,
-    )
-
-    # 结果收集
-    all_fold_metrics = []
-    all_predictions = []
-    all_labels = []
-    all_subject_ids = []
-
-    for fold, (train_ids, val_ids) in enumerate(splits):
-        logger.info(f'\n{"="*60}')
-        logger.info(f'Fold {fold + 1}/{n_splits}')
-        logger.info(f'Train: {len(train_ids)} subjects, Val: {len(val_ids)} subjects')
-        logger.info(f'{"="*60}')
-
-        # 获取训练和验证数据
-        train_data = [subject_dict[sid] for sid in train_ids]
-        val_data = [subject_dict[sid] for sid in val_ids]
-
-        # 创建数据集
-        train_dataset = LightweightGazeDataset(
-            data=train_data,
-            config=seq_config,
-            fit_normalizer=True,
-            task_type=config.task_type,
-        )
-
-        val_dataset = LightweightGazeDataset(
-            data=val_data,
-            config=seq_config,
-            fit_normalizer=False,
-            normalizer_stats=train_dataset.stats,
-            task_type=config.task_type,
-        )
-
-        # 创建训练器
-        trainer = DeepLearningTrainer(config)
-
-        # 训练
-        fold_metrics = trainer.train(train_dataset, val_dataset, fold=fold)
-
-        # 获取预测
-        predictions, labels, _ = trainer.predict(val_dataset)
-
-        # 记录结果
-        all_fold_metrics.append(fold_metrics)
-        all_predictions.extend(predictions)
-        all_labels.extend(labels)
-        all_subject_ids.extend(val_ids)
-
-        logger.info(f'Fold {fold + 1} Results:')
-        if config.task_type == 'classification':
-            logger.info(f'  Accuracy: {fold_metrics["accuracy"]:.4f}')
-            logger.info(f'  F1: {fold_metrics["f1"]:.4f}')
-        else:
-            logger.info(f'  R2: {fold_metrics["r2"]:.4f}')
-            logger.info(f'  MAE: {fold_metrics["mae"]:.4f}')
-            logger.info(f'  RMSE: {fold_metrics["rmse"]:.4f}')
-
-    # 汇总结果
-    all_predictions = np.array(all_predictions)
-    all_labels = np.array(all_labels)
-
-    # 根据任务类型计算整体指标
-    if config.task_type == 'classification':
-        # 分类任务
-        preds = np.argmax(all_predictions, axis=1) if len(all_predictions.shape) > 1 else all_predictions
-        overall_metrics = {
-            'accuracy': accuracy_score(all_labels, preds),
-            'f1': f1_score(all_labels, preds, average='macro'),
-        }
-        fold_accs = [m['accuracy'] for m in all_fold_metrics]
-        fold_f1s = [m['f1'] for m in all_fold_metrics]
-
-        results = {
-            'task_type': 'classification',
-            'overall_metrics': overall_metrics,
-            'fold_metrics': all_fold_metrics,
-            'fold_accuracy_mean': np.mean(fold_accs),
-            'fold_accuracy_std': np.std(fold_accs),
-            'fold_f1_mean': np.mean(fold_f1s),
-            'fold_f1_std': np.std(fold_f1s),
-            'predictions': all_predictions.tolist(),
-            'labels': all_labels.tolist(),
-            'subject_ids': all_subject_ids,
-        }
-    else:
-        # 回归任务
-        overall_metrics = {
-            'r2': r2_score(all_labels, all_predictions),
-            'mae': mean_absolute_error(all_labels, all_predictions),
-            'rmse': np.sqrt(mean_squared_error(all_labels, all_predictions)),
-        }
-        fold_r2s = [m['r2'] for m in all_fold_metrics]
-        fold_maes = [m['mae'] for m in all_fold_metrics]
-
-        results = {
-            'task_type': 'regression',
-            'overall_metrics': overall_metrics,
-            'fold_metrics': all_fold_metrics,
-            'fold_r2_mean': np.mean(fold_r2s),
-            'fold_r2_std': np.std(fold_r2s),
-            'fold_mae_mean': np.mean(fold_maes),
-            'fold_mae_std': np.std(fold_maes),
-            'predictions': all_predictions.tolist(),
-            'labels': all_labels.tolist(),
-            'subject_ids': all_subject_ids,
-        }
-
-    return results
 
 
 def run_2x2_experiment(
@@ -510,7 +378,6 @@ def run_2x2_experiment(
         'task_type': training_config.task_type,  # 添加任务类型
         'experiment_info': {
             'mode': experiment_config.mode,
-            'split_type': experiment_config.split_type,
             'train_subjects': experiment_config.train_subjects,
             'train_tasks': experiment_config.train_tasks,
             'n_repeats': experiment_config.n_repeats,
@@ -540,7 +407,7 @@ def print_results(results: Dict) -> None:
         # 2×2 实验结果
         info = results['experiment_info']
         print(f'\n实验模式: {info["mode"]}')
-        print(f'划分策略: {info["split_type"]}')
+        print(f'划分策略: 2×2 矩阵')
         print(f'训练被试数: {info["train_subjects"]}')
         print(f'训练任务数: {info["train_tasks"]}')
         print(f'重复次数: {info["n_repeats"]}')
@@ -911,12 +778,8 @@ def main():
     # ============================================================
     # 运行实验
     # ============================================================
-    if experiment_config.split_type == '2x2':
-        # 运行 2×2 实验设计
-        results = run_2x2_experiment(data, config, experiment_config)
-    else:
-        # 运行 K-Fold 交叉验证
-        results = run_cross_validation(data, config, n_splits=experiment_config.n_folds)
+    # 运行 2×2 矩阵划分实验
+    results = run_2x2_experiment(data, config, experiment_config)
 
     # 打印结果
     print_results(results)

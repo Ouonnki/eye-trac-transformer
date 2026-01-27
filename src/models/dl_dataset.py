@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from sklearn.model_selection import KFold
 
 from src.data.schemas import SubjectData, TaskTrial, SearchSegment, GazePoint
 
@@ -304,34 +303,6 @@ class HierarchicalGazeDataset(Dataset):
             'label': torch.tensor(subject_data['label'], dtype=torch.float32),
             'subject_id': subject_data['subject_id'],
         }
-
-
-def create_subject_splits(
-    subject_ids: List[str],
-    n_splits: int = 5,
-    random_state: int = 42,
-) -> List[Tuple[List[str], List[str]]]:
-    """
-    按被试划分交叉验证
-
-    Args:
-        subject_ids: 被试ID列表
-        n_splits: 折数
-        random_state: 随机种子
-
-    Returns:
-        [(train_ids, val_ids), ...] 的列表
-    """
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    splits = []
-
-    subject_ids_array = np.array(subject_ids)
-    for train_idx, val_idx in kf.split(subject_ids):
-        train_ids = subject_ids_array[train_idx].tolist()
-        val_ids = subject_ids_array[val_idx].tolist()
-        splits.append((train_ids, val_ids))
-
-    return splits
 
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:

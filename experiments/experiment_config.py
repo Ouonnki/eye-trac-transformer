@@ -2,7 +2,7 @@
 """
 实验配置模块
 
-提供统一的实验配置管理，支持 2×2 划分和 K-Fold 交叉验证。
+提供统一的实验配置管理，支持 2×2 矩阵划分。
 通过环境变量配置，无需修改代码。
 """
 
@@ -21,23 +21,19 @@ class ExperimentConfig:
     - quick: 快速验证，单次训练
     - formal: 正式实验，多次随机划分取平均
 
-    支持两种划分策略：
-    - 2x2: 2×2 矩阵划分（被试 × 任务）
-    - kfold: K-Fold 交叉验证
+    使用 2×2 矩阵划分策略（被试 × 任务）：
+    - train: 训练集
+    - test1: 新人旧题（跨被试泛化）
+    - test2: 旧人新题（跨任务泛化）
+    - test3: 新人新题（双重泛化）
     """
 
     # 实验模式
     mode: str = 'quick'  # 'quick' 快速验证, 'formal' 正式实验
 
-    # 划分策略
-    split_type: str = '2x2'  # '2x2' 或 'kfold'
-
     # 2×2 划分配置
     train_subjects: int = 100  # 训练集被试数量
     train_tasks: int = 20      # 训练集任务数量 (按 task_id 排序后取前N个)
-
-    # K-Fold 配置
-    n_folds: int = 5  # K-Fold 折数
 
     # 正式实验配置
     n_repeats: int = 1  # 重复次数，quick=1, formal=5-10
@@ -69,10 +65,8 @@ class ExperimentConfig:
 
         支持的环境变量：
         - EXPERIMENT_MODE: 'quick' 或 'formal'
-        - SPLIT_TYPE: '2x2' 或 'kfold'
         - TRAIN_SUBJECTS: 训练集被试数量
         - TRAIN_TASKS: 训练集任务数量
-        - N_FOLDS: K-Fold 折数
         - N_REPEATS: 重复次数
         - RANDOM_SEED: 随机种子
         - SAVE_FIGURES: 'true' 或 'false'
@@ -84,10 +78,8 @@ class ExperimentConfig:
         """
         return cls(
             mode=os.environ.get('EXPERIMENT_MODE', 'quick'),
-            split_type=os.environ.get('SPLIT_TYPE', '2x2'),
             train_subjects=int(os.environ.get('TRAIN_SUBJECTS', '100')),
             train_tasks=int(os.environ.get('TRAIN_TASKS', '20')),
-            n_folds=int(os.environ.get('N_FOLDS', '5')),
             n_repeats=int(os.environ.get('N_REPEATS', '1')),
             random_seed=int(os.environ.get('RANDOM_SEED', '42')),
             save_figures=os.environ.get('SAVE_FIGURES', 'true').lower() == 'true',
@@ -99,10 +91,8 @@ class ExperimentConfig:
         """转换为字典"""
         return {
             'mode': self.mode,
-            'split_type': self.split_type,
             'train_subjects': self.train_subjects,
             'train_tasks': self.train_tasks,
-            'n_folds': self.n_folds,
             'n_repeats': self.n_repeats,
             'random_seed': self.random_seed,
             'save_figures': self.save_figures,
@@ -116,13 +106,9 @@ class ExperimentConfig:
         print('实验配置')
         print('=' * 60)
         print(f'  模式: {self.mode}')
-        print(f'  划分策略: {self.split_type}')
-
-        if self.split_type == '2x2':
-            print(f'  训练被试数: {self.train_subjects}')
-            print(f'  训练任务数: {self.train_tasks}')
-        else:
-            print(f'  K-Fold 折数: {self.n_folds}')
+        print(f'  划分策略: 2×2 矩阵')
+        print(f'  训练被试数: {self.train_subjects}')
+        print(f'  训练任务数: {self.train_tasks}')
 
         if self.mode == 'formal':
             print(f'  重复次数: {self.n_repeats}')
