@@ -286,15 +286,8 @@ def main():
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     config.experiment.output_dir = f'outputs/segment_models/{timestamp}'
 
-    # 序列配置
-    seq_config = SequenceConfig(
-        max_seq_len=config.model.max_seq_len,
-        max_tasks=config.model.max_tasks,
-        max_segments=config.model.max_segments,
-        screen_width=1920,
-        screen_height=1080,
-        input_dim=config.model.input_dim,
-    )
+    # 序列配置（数据属性，使用默认值）
+    seq_config = SequenceConfig()
 
     logger.info(f'配置: {config.to_dict()}')
 
