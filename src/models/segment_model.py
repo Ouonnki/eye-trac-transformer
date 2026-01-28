@@ -115,6 +115,38 @@ class SegmentEncoder(nn.Module):
 
         return output
 
+    def forward_features(
+        self,
+        features: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        前向传播并返回特征向量（供 CADT 使用）
+
+        Args:
+            features: (batch, seq_len, input_dim) 眼动序列
+            lengths: (batch,) 每个序列的实际长度
+
+        Returns:
+            prediction: (batch, num_classes) 预测结果
+            segment_repr: (batch, d_model) 片段特征向量
+        """
+        # 构建序列掩码
+        if lengths is not None:
+            batch_size = features.size(0)
+            max_len = features.size(1)
+            mask = torch.arange(max_len, device=features.device).unsqueeze(0) < lengths.unsqueeze(1)
+        else:
+            mask = None
+
+        # 编码片段
+        segment_repr, _ = self.segment_encoder(features, mask)  # (batch, d_model)
+
+        # 预测
+        output = self.prediction_head(segment_repr)  # (batch, num_classes)
+
+        return output, segment_repr
+
     @classmethod
     def from_config(
         cls,

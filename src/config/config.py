@@ -22,6 +22,7 @@ class ExperimentConfig:
     random_seed: int = 42
     experiment_name: str = ''
     output_dir: str = 'outputs/dl_models'
+    data_path: str = 'data/processed/processed_data.pkl'
 
 
 @dataclass
