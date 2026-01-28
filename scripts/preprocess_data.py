@@ -218,13 +218,13 @@ def process_single_subject(
         for trial in subject.trials:
             preprocessor.preprocess_trial(trial)
 
-            # 获取点击事件（来自 raw_gaze_points，即 sheet3）
-            click_points = trial.raw_gaze_points
+            # 获取点击事件（来自 clicks，即 sheet3）
+            click_points = trial.clicks
             if not click_points:
                 continue
 
-            # 获取眼动轨迹（来自 gaze_trajectory，即 sheet4）
-            gaze_trajectory = getattr(trial, 'gaze_trajectory', None)
+            # 获取眼动轨迹（来自 gaze_points，即 sheet4）
+            gaze_trajectory = trial.gaze_points if trial.gaze_points else None
 
             # 分割：第一个参数是点击事件，第二个参数是眼动轨迹
             segmenter = AdaptiveSegmenter(
