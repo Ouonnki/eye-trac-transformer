@@ -117,6 +117,84 @@ def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, scr
     return features
 
 
+def normalize_subject_features(subject_data: Dict) -> Dict:
+    """
+    对单个被试的所有片段进行被试内标准化
+
+    标准化的特征：
+    - x, y: 使用被试内的均值和标准差标准化（消除个体注视位置偏好）
+    - dt, velocity, acceleration: 使用被试内的均值和标准差标准化
+
+    不标准化的特征：
+    - direction, direction_change: 已经归一化到 [-1, 1] 和 [0, 1]
+
+    Args:
+        subject_data: 单个被试的数据字典
+
+    Returns:
+        标准化后的被试数据字典
+    """
+    # 收集该被试所有片段的特征
+    all_x = []
+    all_y = []
+    all_dt = []
+    all_velocity = []
+    all_acceleration = []
+
+    for task in subject_data['tasks']:
+        for segment in task['segments']:
+            if len(segment) > 0:
+                all_x.extend(segment[:, 0].tolist())
+                all_y.extend(segment[:, 1].tolist())
+                if len(segment) > 1:
+                    all_dt.extend(segment[1:, 2].tolist())
+                    all_velocity.extend(segment[1:, 3].tolist())
+                    all_acceleration.extend(segment[1:, 4].tolist())
+
+    # 计算该被试的统计量
+    eps = 1e-8
+
+    x_mean = np.mean(all_x) if all_x else 0.5
+    x_std = np.std(all_x) + eps if all_x else 1.0
+    y_mean = np.mean(all_y) if all_y else 0.5
+    y_std = np.std(all_y) + eps if all_y else 1.0
+    dt_mean = np.mean(all_dt) if all_dt else 0.0
+    dt_std = np.std(all_dt) + eps if all_dt else 1.0
+    velocity_mean = np.mean(all_velocity) if all_velocity else 0.0
+    velocity_std = np.std(all_velocity) + eps if all_velocity else 1.0
+    acceleration_mean = np.mean(all_acceleration) if all_acceleration else 0.0
+    acceleration_std = np.std(all_acceleration) + eps if all_acceleration else 1.0
+
+    # 应用标准化到所有片段
+    for task in subject_data['tasks']:
+        for i, segment in enumerate(task['segments']):
+            if len(segment) > 0:
+                normalized = segment.copy()
+
+                # 标准化 x, y（消除被试的位置偏好）
+                normalized[:, 0] = (segment[:, 0] - x_mean) / x_std
+                normalized[:, 1] = (segment[:, 1] - y_mean) / y_std
+
+                # 标准化 dt, velocity, acceleration
+                if len(segment) > 1:
+                    normalized[1:, 2] = (segment[1:, 2] - dt_mean) / dt_std
+                    normalized[1:, 3] = (segment[1:, 3] - velocity_mean) / velocity_std
+                    normalized[1:, 4] = (segment[1:, 4] - acceleration_mean) / acceleration_std
+
+                task['segments'][i] = normalized
+
+    # 保存该被试的归一化统计量（用于调试和分析）
+    subject_data['normalization_stats'] = {
+        'x_mean': float(x_mean), 'x_std': float(x_std),
+        'y_mean': float(y_mean), 'y_std': float(y_std),
+        'dt_mean': float(dt_mean), 'dt_std': float(dt_std),
+        'velocity_mean': float(velocity_mean), 'velocity_std': float(velocity_std),
+        'acceleration_mean': float(acceleration_mean), 'acceleration_std': float(acceleration_std),
+    }
+
+    return subject_data
+
+
 def process_single_subject(
     subject_id: str,
     loader: GazeDataLoader,
@@ -190,6 +268,8 @@ def main():
                         help='输出目录')
     parser.add_argument('--screen_width', type=int, default=1920)
     parser.add_argument('--screen_height', type=int, default=1080)
+    parser.add_argument('--subject_normalize', action='store_true',
+                        help='使用被试内标准化（消除个体差异）')
     args = parser.parse_args()
 
     print("=" * 60)
@@ -197,6 +277,7 @@ def main():
     print("=" * 60)
     print(f"数据目录: {args.data_dir}")
     print(f"输出目录: {args.output_dir}")
+    print(f"被试内标准化: {'是' if args.subject_normalize else '否'}")
 
     # 创建输出目录
     output_dir = Path(args.output_dir)
@@ -231,6 +312,13 @@ def main():
 
     print(f"\n处理完成: {len(all_data)} 成功, {failed} 失败")
 
+    # 被试内标准化
+    if args.subject_normalize:
+        print("\n应用被试内标准化...")
+        for i, subject_data in enumerate(tqdm(all_data, desc="标准化")):
+            all_data[i] = normalize_subject_features(subject_data)
+        print("被试内标准化完成")
+
     # 统计
     total_tasks = sum(len(d['tasks']) for d in all_data)
     total_segments = sum(
@@ -241,7 +329,10 @@ def main():
     print(f"总片段数: {total_segments}")
 
     # 保存
-    output_file = output_dir / 'processed_data.pkl'
+    if args.subject_normalize:
+        output_file = output_dir / 'processed_data_subject_norm.pkl'
+    else:
+        output_file = output_dir / 'processed_data.pkl'
     print(f"\n保存到: {output_file}")
 
     with open(output_file, 'wb') as f:

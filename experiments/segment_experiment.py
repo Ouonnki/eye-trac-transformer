@@ -136,28 +136,38 @@ def run_2x2_experiment(
     # 执行划分
     splits = splitter.split(data)
 
-    # 直接使用预处理数据创建训练数据集并拟合归一化器
-    logger.info('创建训练数据集并拟合归一化器...')
+    # 检测数据是否已经被试内标准化（检查是否有 normalization_stats 字段）
+    is_subject_normalized = 'normalization_stats' in data[0] if data else False
+    if is_subject_normalized:
+        logger.info('检测到数据已被试内标准化，跳过全局标准化')
+    else:
+        logger.info('数据未被试内标准化，将应用全局标准化')
+
+    # 创建训练数据集
+    logger.info('创建训练数据集...')
     train_dataset = SegmentGazeDataset.from_processed_data(splits['train'], seq_config)
 
-    # 拟合归一化器并应用
-    all_features = [f for f in train_dataset.segments if len(f) > 0]
-    if all_features:
-        train_dataset.feature_extractor.fit_normalization(all_features)
-        for i, features in enumerate(train_dataset.segments):
-            if len(features) > 0:
-                train_dataset.segments[i] = train_dataset.feature_extractor.normalize(features)
+    # 如果未被试内标准化，则应用全局标准化
+    normalizer_stats = None
+    if not is_subject_normalized:
+        # 拟合归一化器并应用
+        all_features = [f for f in train_dataset.segments if len(f) > 0]
+        if all_features:
+            train_dataset.feature_extractor.fit_normalization(all_features)
+            for i, features in enumerate(train_dataset.segments):
+                if len(features) > 0:
+                    train_dataset.segments[i] = train_dataset.feature_extractor.normalize(features)
 
-    # 收集归一化统计量
-    normalizer_stats = {
-        'dt_mean': train_dataset.feature_extractor.dt_mean,
-        'dt_std': train_dataset.feature_extractor.dt_std,
-        'velocity_mean': train_dataset.feature_extractor.velocity_mean,
-        'velocity_std': train_dataset.feature_extractor.velocity_std,
-        'acceleration_mean': train_dataset.feature_extractor.acceleration_mean,
-        'acceleration_std': train_dataset.feature_extractor.acceleration_std,
-    }
-    logger.info(f'归一化统计量: {normalizer_stats}')
+        # 收集归一化统计量
+        normalizer_stats = {
+            'dt_mean': train_dataset.feature_extractor.dt_mean,
+            'dt_std': train_dataset.feature_extractor.dt_std,
+            'velocity_mean': train_dataset.feature_extractor.velocity_mean,
+            'velocity_std': train_dataset.feature_extractor.velocity_std,
+            'acceleration_mean': train_dataset.feature_extractor.acceleration_mean,
+            'acceleration_std': train_dataset.feature_extractor.acceleration_std,
+        }
+        logger.info(f'全局归一化统计量: {normalizer_stats}')
 
     # 创建验证集（从训练集划分20%）
     val_size = len(train_dataset) // 5
