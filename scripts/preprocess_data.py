@@ -29,7 +29,9 @@ import pickle
 import gc
 import math
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 import numpy as np
 from tqdm import tqdm
@@ -121,11 +123,11 @@ def normalize_subject_features(subject_data: Dict) -> Dict:
     """
     对单个被试的所有片段进行被试内标准化
 
-    标准化的特征：
-    - x, y: 使用被试内的均值和标准差标准化（消除个体注视位置偏好）
+    只标准化动态特征（消除个体的速度/时间习惯差异）：
     - dt, velocity, acceleration: 使用被试内的均值和标准差标准化
 
-    不标准化的特征：
+    保持不变的特征：
+    - x, y: 保留原始屏幕归一化值（保留空间信息）
     - direction, direction_change: 已经归一化到 [-1, 1] 和 [0, 1]
 
     Args:
@@ -134,30 +136,21 @@ def normalize_subject_features(subject_data: Dict) -> Dict:
     Returns:
         标准化后的被试数据字典
     """
-    # 收集该被试所有片段的特征
-    all_x = []
-    all_y = []
+    # 收集该被试所有片段的动态特征
     all_dt = []
     all_velocity = []
     all_acceleration = []
 
     for task in subject_data['tasks']:
         for segment in task['segments']:
-            if len(segment) > 0:
-                all_x.extend(segment[:, 0].tolist())
-                all_y.extend(segment[:, 1].tolist())
-                if len(segment) > 1:
-                    all_dt.extend(segment[1:, 2].tolist())
-                    all_velocity.extend(segment[1:, 3].tolist())
-                    all_acceleration.extend(segment[1:, 4].tolist())
+            if len(segment) > 1:
+                all_dt.extend(segment[1:, 2].tolist())
+                all_velocity.extend(segment[1:, 3].tolist())
+                all_acceleration.extend(segment[1:, 4].tolist())
 
     # 计算该被试的统计量
     eps = 1e-8
 
-    x_mean = np.mean(all_x) if all_x else 0.5
-    x_std = np.std(all_x) + eps if all_x else 1.0
-    y_mean = np.mean(all_y) if all_y else 0.5
-    y_std = np.std(all_y) + eps if all_y else 1.0
     dt_mean = np.mean(all_dt) if all_dt else 0.0
     dt_std = np.std(all_dt) + eps if all_dt else 1.0
     velocity_mean = np.mean(all_velocity) if all_velocity else 0.0
@@ -165,28 +158,21 @@ def normalize_subject_features(subject_data: Dict) -> Dict:
     acceleration_mean = np.mean(all_acceleration) if all_acceleration else 0.0
     acceleration_std = np.std(all_acceleration) + eps if all_acceleration else 1.0
 
-    # 应用标准化到所有片段
+    # 应用标准化到所有片段（只标准化动态特征）
     for task in subject_data['tasks']:
         for i, segment in enumerate(task['segments']):
-            if len(segment) > 0:
+            if len(segment) > 1:
                 normalized = segment.copy()
 
-                # 标准化 x, y（消除被试的位置偏好）
-                normalized[:, 0] = (segment[:, 0] - x_mean) / x_std
-                normalized[:, 1] = (segment[:, 1] - y_mean) / y_std
-
-                # 标准化 dt, velocity, acceleration
-                if len(segment) > 1:
-                    normalized[1:, 2] = (segment[1:, 2] - dt_mean) / dt_std
-                    normalized[1:, 3] = (segment[1:, 3] - velocity_mean) / velocity_std
-                    normalized[1:, 4] = (segment[1:, 4] - acceleration_mean) / acceleration_std
+                # 只标准化 dt, velocity, acceleration（保留 x, y 不变）
+                normalized[1:, 2] = (segment[1:, 2] - dt_mean) / dt_std
+                normalized[1:, 3] = (segment[1:, 3] - velocity_mean) / velocity_std
+                normalized[1:, 4] = (segment[1:, 4] - acceleration_mean) / acceleration_std
 
                 task['segments'][i] = normalized
 
     # 保存该被试的归一化统计量（用于调试和分析）
     subject_data['normalization_stats'] = {
-        'x_mean': float(x_mean), 'x_std': float(x_std),
-        'y_mean': float(y_mean), 'y_std': float(y_std),
         'dt_mean': float(dt_mean), 'dt_std': float(dt_std),
         'velocity_mean': float(velocity_mean), 'velocity_std': float(velocity_std),
         'acceleration_mean': float(acceleration_mean), 'acceleration_std': float(acceleration_std),
@@ -260,6 +246,27 @@ def process_single_subject(
     return None
 
 
+def process_subject_worker(args: Tuple[str, str, int, int]) -> Optional[Dict]:
+    """
+    多进程 worker 函数，处理单个被试
+
+    Args:
+        args: (subject_id, data_dir, screen_width, screen_height)
+
+    Returns:
+        处理后的被试数据字典，失败返回 None
+    """
+    subject_id, data_dir, screen_width, screen_height = args
+
+    # 每个进程创建自己的 loader 和 preprocessor
+    loader = GazeDataLoader(data_dir)
+    loader.load_labels()
+    loader.load_tasks()
+    preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
+
+    return process_single_subject(subject_id, loader, preprocessor, screen_width, screen_height)
+
+
 def main():
     parser = argparse.ArgumentParser(description='预处理眼动数据')
     parser.add_argument('--data_dir', type=str, default='data/gaze_trajectory_data',
@@ -270,7 +277,12 @@ def main():
     parser.add_argument('--screen_height', type=int, default=1080)
     parser.add_argument('--subject_normalize', action='store_true',
                         help='使用被试内标准化（消除个体差异）')
+    parser.add_argument('--workers', type=int, default=1,
+                        help='并行处理的进程数（默认1，即串行）')
     args = parser.parse_args()
+
+    # 自动检测 CPU 核心数
+    max_workers = args.workers if args.workers > 0 else multiprocessing.cpu_count()
 
     print("=" * 60)
     print("眼动数据预处理")
@@ -278,37 +290,61 @@ def main():
     print(f"数据目录: {args.data_dir}")
     print(f"输出目录: {args.output_dir}")
     print(f"被试内标准化: {'是' if args.subject_normalize else '否'}")
+    print(f"并行进程数: {max_workers}")
 
     # 创建输出目录
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 加载器
+    # 加载器（用于获取被试列表）
     loader = GazeDataLoader(args.data_dir)
     loader.load_labels()
     loader.load_tasks()
-    preprocessor = GazePreprocessor(screen_width=args.screen_width, screen_height=args.screen_height)
 
     subject_ids = loader.get_all_subject_ids()
     print(f"\n找到 {len(subject_ids)} 个被试")
 
-    # 逐个处理
+    # 处理被试
     all_data = []
     failed = 0
 
-    for subject_id in tqdm(subject_ids, desc="处理被试"):
-        data = process_single_subject(
-            subject_id, loader, preprocessor,
-            args.screen_width, args.screen_height
-        )
-        if data is not None:
-            all_data.append(data)
-        else:
-            failed += 1
+    if max_workers == 1:
+        # 串行处理
+        preprocessor = GazePreprocessor(screen_width=args.screen_width, screen_height=args.screen_height)
+        for subject_id in tqdm(subject_ids, desc="处理被试"):
+            data = process_single_subject(
+                subject_id, loader, preprocessor,
+                args.screen_width, args.screen_height
+            )
+            if data is not None:
+                all_data.append(data)
+            else:
+                failed += 1
 
-        # 定期垃圾回收
-        if len(all_data) % 20 == 0:
-            gc.collect()
+            # 定期垃圾回收
+            if len(all_data) % 20 == 0:
+                gc.collect()
+    else:
+        # 并行处理
+        worker_args = [
+            (subject_id, args.data_dir, args.screen_width, args.screen_height)
+            for subject_id in subject_ids
+        ]
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_subject_worker, arg): arg[0] for arg in worker_args}
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="处理被试"):
+                subject_id = futures[future]
+                try:
+                    data = future.result()
+                    if data is not None:
+                        all_data.append(data)
+                    else:
+                        failed += 1
+                except Exception as e:
+                    print(f"  Error processing {subject_id}: {e}")
+                    failed += 1
 
     print(f"\n处理完成: {len(all_data)} 成功, {failed} 失败")
 
