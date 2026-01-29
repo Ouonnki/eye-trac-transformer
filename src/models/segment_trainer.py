@@ -566,9 +566,17 @@ class SegmentTrainer:
             for batch in test_loader:
                 features = batch['features'].to(self.device, non_blocking=True)
                 lengths = batch['length'].to(self.device, non_blocking=True)
-                labels = batch['label']
+                labels = batch['labels']
 
-                outputs = self.model(features, lengths)
+                # 处理任务条件
+                task_conditions = None
+                if 'task_conditions' in batch and batch['task_conditions'] is not None:
+                    task_conditions = {
+                        k: v.to(self.device, non_blocking=True)
+                        for k, v in batch['task_conditions'].items()
+                    }
+
+                outputs = self.model(features, lengths, task_conditions=task_conditions)
                 all_predictions.extend(outputs.cpu().numpy())
                 all_labels.extend(labels.numpy())
                 all_subject_ids.extend(batch['subject_ids'])
