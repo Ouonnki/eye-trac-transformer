@@ -9,9 +9,14 @@
     python experiments/run_segment_cadt.py --config configs/seg.json --target_domain test1
 """
 
+import sys
+from pathlib import Path
+
+# 添加项目根目录到 Python 路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import argparse
 import logging
-from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -19,6 +24,7 @@ from torch.utils.data import DataLoader
 from src.config import UnifiedConfig
 from src.models.dl_dataset import SequenceConfig, SegmentGazeDataset
 from src.models.segment_cadt_trainer import SegmentCADTTrainer
+from src.data.split_strategy import TwoByTwoSplitter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +48,7 @@ def load_data_splits(data_path: str):
     path = Path(data_path)
     if not path.exists():
         # 尝试默认路径
-        default_path = Path('data/processed/segment_data.pkl')
+        default_path = Path('data/processed/processed_data.pkl')
         if default_path.exists():
             path = default_path
         else:
@@ -70,7 +76,16 @@ def run_segment_cadt_experiment(
     """
     # 加载配置
     config = UnifiedConfig.from_json(config_path)
-    seq_config = SequenceConfig.from_config(config)
+
+    # 创建序列配置
+    seq_config = SequenceConfig(
+        max_seq_len=100,
+        max_tasks=30,
+        max_segments=30,
+        screen_width=1920,
+        screen_height=1080,
+        input_dim=config.model.input_dim,
+    )
 
     logger.info(f"配置加载完成: {config_path}")
     logger.info(f"目标域: {target_domain}")
@@ -78,17 +93,43 @@ def run_segment_cadt_experiment(
     logger.info(f"KL权重: {config.cadt.cadt_kl_weight}")
     logger.info(f"Reset模式: {config.cadt.reset_mode}")
 
-    # 加载数据
-    splits = load_data_splits(data_path)
+    # 加载原始数据
+    all_data = load_data_splits(data_path)
+    logger.info(f"加载了 {len(all_data)} 个被试")
+
+    # 使用 TwoByTwoSplitter 进行划分
+    splitter = TwoByTwoSplitter(
+        train_subjects=config.experiment.train_subjects,
+        train_tasks=config.experiment.train_tasks,
+        random_state=config.experiment.random_seed,
+    )
+    splits = splitter.split(all_data)
 
     # 创建数据集
     logger.info("创建源域数据集 (train)...")
     train_dataset = SegmentGazeDataset.from_processed_data(
         splits['train'],
         seq_config,
-        fit_normalizer=True,
         domain='train',
     )
+
+    # 拟合归一化器并应用到训练集
+    all_features = [f for f in train_dataset.segments if len(f) > 0]
+    if all_features:
+        train_dataset.feature_extractor.fit_normalization(all_features)
+        for i, features in enumerate(train_dataset.segments):
+            if len(features) > 0:
+                train_dataset.segments[i] = train_dataset.feature_extractor.normalize(features)
+
+    # 收集归一化统计量
+    normalizer_stats = {
+        'dt_mean': train_dataset.feature_extractor.dt_mean,
+        'dt_std': train_dataset.feature_extractor.dt_std,
+        'velocity_mean': train_dataset.feature_extractor.velocity_mean,
+        'velocity_std': train_dataset.feature_extractor.velocity_std,
+        'acceleration_mean': train_dataset.feature_extractor.acceleration_mean,
+        'acceleration_std': train_dataset.feature_extractor.acceleration_std,
+    }
 
     logger.info(f"创建目标域数据集 ({target_domain})...")
     test_dataset = SegmentGazeDataset.from_processed_data(

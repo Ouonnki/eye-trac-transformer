@@ -42,7 +42,7 @@
     "pre_train_dis_weight": 0.0,
     "reset_mode": "optimizer",
     "use_augmentation": false,
-    "encoder_lr": 0.00005,
+    "encoder_lr": 5e-05,
     "classifier_lr": 0.001,
     "discriminator_lr": 0.001
   },

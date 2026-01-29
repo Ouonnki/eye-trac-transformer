@@ -298,6 +298,13 @@ class SegmentCADTModel(nn.Module):
                 features = batch['features'].to(self.device)
                 task_conditions = batch.get('task_conditions')
 
+                # 将 task_conditions 中的张量移动到 GPU
+                if task_conditions is not None:
+                    task_conditions = {
+                        k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                        for k, v in task_conditions.items()
+                    }
+
                 # 双流编码，使用不变特征
                 f_invariant, _ = self.encode(features, None, task_conditions)
                 labels = batch['labels'].to(self.device)
