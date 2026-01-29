@@ -118,6 +118,7 @@ class SegmentTrainer:
             config=self.config,
             seq_config=self.seq_config,
             num_classes=num_classes,
+            use_task_embedding=getattr(self.config.model, 'use_task_embedding', False),
         )
         model = model.to(self.device)
 
@@ -214,13 +215,21 @@ class SegmentTrainer:
         for batch in train_loader:
             features = batch['features'].to(self.device, non_blocking=True)
             lengths = batch['length'].to(self.device, non_blocking=True)
-            labels = batch['label'].to(self.device, non_blocking=True)
+            labels = batch['labels'].to(self.device, non_blocking=True)
+
+            # 处理任务条件
+            task_conditions = None
+            if 'task_conditions' in batch and batch['task_conditions'] is not None:
+                task_conditions = {
+                    k: v.to(self.device, non_blocking=True)
+                    for k, v in batch['task_conditions'].items()
+                }
 
             optimizer.zero_grad(set_to_none=True)
 
             if self.use_amp:
                 with torch.cuda.amp.autocast():
-                    outputs = model(features, lengths)
+                    outputs = model(features, lengths, task_conditions=task_conditions)
                     loss = criterion(outputs, labels.squeeze(-1) if outputs.dim() > 1 else labels)
 
                 self.scaler.scale(loss).backward()
@@ -232,7 +241,7 @@ class SegmentTrainer:
                 self.scaler.step(optimizer)
                 self.scaler.update()
             else:
-                outputs = model(features, lengths)
+                outputs = model(features, lengths, task_conditions=task_conditions)
                 loss = criterion(outputs, labels.squeeze(-1) if outputs.dim() > 1 else labels)
 
                 loss.backward()
@@ -279,14 +288,22 @@ class SegmentTrainer:
         for batch in val_loader:
             features = batch['features'].to(self.device, non_blocking=True)
             lengths = batch['length'].to(self.device, non_blocking=True)
-            labels = batch['label'].to(self.device, non_blocking=True)
+            labels = batch['labels'].to(self.device, non_blocking=True)
+
+            # 处理任务条件
+            task_conditions = None
+            if 'task_conditions' in batch and batch['task_conditions'] is not None:
+                task_conditions = {
+                    k: v.to(self.device, non_blocking=True)
+                    for k, v in batch['task_conditions'].items()
+                }
 
             if self.use_amp:
                 with torch.cuda.amp.autocast():
-                    outputs = model(features, lengths)
+                    outputs = model(features, lengths, task_conditions=task_conditions)
                     loss = criterion(outputs, labels.squeeze(-1) if outputs.dim() > 1 else labels)
             else:
-                outputs = model(features, lengths)
+                outputs = model(features, lengths, task_conditions=task_conditions)
                 loss = criterion(outputs, labels.squeeze(-1) if outputs.dim() > 1 else labels)
 
             total_loss += loss.item()

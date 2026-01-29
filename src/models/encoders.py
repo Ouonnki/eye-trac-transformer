@@ -5,7 +5,7 @@
 包含用于层级 Transformer 的编码器组件。
 """
 
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Any
 
 import torch
 import torch.nn as nn
@@ -40,6 +40,8 @@ class GazeTransformerEncoder(nn.Module):
         dropout: float,
         max_seq_len: int,
         use_gradient_checkpointing: bool = False,
+        use_task_embedding: bool = False,
+        task_embedding_dim: int = 16,
     ):
         """
         初始化
@@ -53,6 +55,8 @@ class GazeTransformerEncoder(nn.Module):
             dropout: Dropout 比例
             max_seq_len: 最大序列长度
             use_gradient_checkpointing: 是否使用梯度检查点节省显存
+            use_task_embedding: 是否使用任务嵌入
+            task_embedding_dim: 任务嵌入维度
         """
         super().__init__()
 
@@ -67,6 +71,12 @@ class GazeTransformerEncoder(nn.Module):
 
         # [CLS] token
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+
+        # 任务嵌入（可选）
+        self.use_task_embedding = use_task_embedding
+        if use_task_embedding:
+            from src.models.task_embedding import TaskEmbedding
+            self.task_embedding = TaskEmbedding(d_model=d_model, embedding_dim=task_embedding_dim)
 
         # Transformer 编码器层（分开存储以支持梯度检查点）
         self.encoder_layers = nn.ModuleList([
@@ -88,6 +98,7 @@ class GazeTransformerEncoder(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        task_conditions: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         前向传播
@@ -95,6 +106,12 @@ class GazeTransformerEncoder(nn.Module):
         Args:
             x: (batch, seq_len, input_dim) 眼动序列
             mask: (batch, seq_len) 有效位置掩码（True 表示有效）
+            task_conditions: 任务条件字典，包含:
+                - grid_scale: (batch,)
+                - continuous_thinking: (batch,)
+                - click_disappear: (batch,)
+                - has_distractor: (batch,)
+                - has_task_distractor: (batch,)
 
         Returns:
             output: (batch, d_model) 片段表示
@@ -108,6 +125,19 @@ class GazeTransformerEncoder(nn.Module):
         # 添加 [CLS] token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # (batch, 1, d_model)
         x = torch.cat([cls_tokens, x], dim=1)  # (batch, seq_len+1, d_model)
+
+        # 添加任务嵌入（在位置编码之前）
+        if self.use_task_embedding and task_conditions is not None:
+            task_emb = self.task_embedding(
+                grid_scale=task_conditions['grid_scale'],
+                continuous_thinking=task_conditions['continuous_thinking'],
+                click_disappear=task_conditions['click_disappear'],
+                has_distractor=task_conditions['has_distractor'],
+                has_task_distractor=task_conditions['has_task_distractor'],
+            )  # (batch, d_model)
+
+            # 广播到所有位置（包括 [CLS] token）
+            x = x + task_emb.unsqueeze(1)  # (batch, seq_len+1, d_model)
 
         # 位置编码
         x = self.pos_encoder(x)

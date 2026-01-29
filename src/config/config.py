@@ -37,6 +37,10 @@ class ModelConfig:
     attention_dim: int = 32
     dropout: float = 0.1
 
+    # 任务嵌入配置
+    use_task_embedding: bool = False
+    task_embedding_dim: int = 16
+
 
 @dataclass
 class TrainingConfig:

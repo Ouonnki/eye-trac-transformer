@@ -6,7 +6,7 @@
 """
 
 import logging
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, Tuple, TYPE_CHECKING, Dict
 
 import torch
 import torch.nn as nn
@@ -44,6 +44,7 @@ class SegmentEncoder(nn.Module):
         dropout: float = 0.1,
         num_classes: int = 1,
         use_gradient_checkpointing: bool = False,
+        use_task_embedding: bool = False,
     ):
         """
         初始化
@@ -58,13 +59,18 @@ class SegmentEncoder(nn.Module):
             dropout: Dropout比例
             num_classes: 输出类别数（1=回归，>1=分类）
             use_gradient_checkpointing: 是否使用梯度检查点
+            use_task_embedding: 是否使用任务嵌入
         """
         super().__init__()
 
         self.d_model = d_model
         self.num_classes = num_classes
+        self.use_task_embedding = use_task_embedding
 
         # 片段编码器（复用现有的 GazeTransformerEncoder）
+        # 获取任务嵌入配置
+        task_emb_dim = getattr(model_config, 'task_embedding_dim', 16)
+
         self.segment_encoder = GazeTransformerEncoder(
             input_dim=model_config.input_dim,
             d_model=d_model,
@@ -74,6 +80,8 @@ class SegmentEncoder(nn.Module):
             dropout=dropout,
             max_seq_len=seq_config.max_seq_len,
             use_gradient_checkpointing=use_gradient_checkpointing,
+            use_task_embedding=use_task_embedding,
+            task_embedding_dim=task_emb_dim,
         )
 
         # 预测头
@@ -88,6 +96,7 @@ class SegmentEncoder(nn.Module):
         self,
         features: torch.Tensor,
         lengths: Optional[torch.Tensor] = None,
+        task_conditions: Optional[Dict[str, torch.Tensor]] = None,
     ) -> torch.Tensor:
         """
         前向传播
@@ -95,6 +104,7 @@ class SegmentEncoder(nn.Module):
         Args:
             features: (batch, seq_len, input_dim) 眼动序列
             lengths: (batch,) 每个序列的实际长度
+            task_conditions: 任务条件字典（当 use_task_embedding=True 时需要）
 
         Returns:
             (batch, num_classes) 预测结果
@@ -108,10 +118,10 @@ class SegmentEncoder(nn.Module):
             mask = None
 
         # 编码片段
-        segment_repr, _ = self.segment_encoder(features, mask)  # (batch, d_model)
+        segment_repr, _ = self.segment_encoder(features, mask, task_conditions)
 
         # 预测
-        output = self.prediction_head(segment_repr)  # (batch, num_classes)
+        output = self.prediction_head(segment_repr)
 
         return output
 
@@ -128,12 +138,13 @@ class SegmentEncoder(nn.Module):
         Args:
             config: UnifiedConfig
             seq_config: SequenceConfig
-            **kwargs: 额外参数（如 num_classes）
+            **kwargs: 额外参数（如 num_classes, use_task_embedding）
 
         Returns:
             SegmentEncoder 实例
         """
         num_classes = kwargs.get('num_classes', 1)
+        use_task_embedding = kwargs.get('use_task_embedding', False)
 
         return cls(
             model_config=config.model,
@@ -145,4 +156,5 @@ class SegmentEncoder(nn.Module):
             dropout=config.model.dropout,
             num_classes=num_classes,
             use_gradient_checkpointing=config.device.use_gradient_checkpointing,
+            use_task_embedding=use_task_embedding,
         )

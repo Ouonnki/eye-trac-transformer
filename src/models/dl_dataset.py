@@ -426,13 +426,31 @@ class SegmentGazeDataset(Dataset):
         else:
             label_dtype = torch.float32
 
-        return {
+        result = {
             'features': torch.from_numpy(padded),
             'length': seq_len,
             'label': torch.tensor(label_value, dtype=label_dtype),
             'subject_id': self.segment_subject_ids[idx],
             'task_id': self.segment_task_ids[idx],
         }
+
+        # 添加任务条件（如果有）
+        if hasattr(self, 'task_config_map'):
+            task_id = self.segment_task_ids[idx]
+            task_cond = self.task_config_map.get(task_id)
+            if task_cond is not None:
+                result['task_conditions'] = task_cond.to_dict()
+            else:
+                # 默认值
+                result['task_conditions'] = {
+                    'grid_scale': 3,
+                    'continuous_thinking': 0,
+                    'click_disappear': 0,
+                    'has_distractor': 0,
+                    'has_task_distractor': 0,
+                }
+
+        return result
 
     @classmethod
     def from_processed_data(
@@ -449,17 +467,21 @@ class SegmentGazeDataset(Dataset):
                 - subject_id: str
                 - label: float
                 - category: int
-                - tasks: List[Dict] with 'task_id' and 'segments'
+                - tasks: List[Dict] with 'task_id', 'segments', 'task_conditions'
             config: 序列配置
             normalizer_stats: 归一化统计量（可选）
 
         Returns:
             SegmentGazeDataset 实例
         """
+        from src.models.task_embedding import TaskCondition
+
         segments = []
         segment_labels = []
         segment_subject_ids = []
         segment_task_ids = []
+        # 任务条件映射：task_id -> TaskCondition
+        task_config_map = {}
 
         for subject_dict in processed_data:
             subject_id = subject_dict['subject_id']
@@ -471,6 +493,17 @@ class SegmentGazeDataset(Dataset):
 
             for task_dict in subject_dict['tasks']:
                 task_id = task_dict['task_id']
+
+                # 构建任务条件映射
+                if task_id not in task_config_map and 'task_conditions' in task_dict:
+                    tc = task_dict['task_conditions']
+                    task_config_map[task_id] = TaskCondition.from_task_config(
+                        grid_size=tc['grid_size'],
+                        number_range=tc['number_range'],
+                        click_disappear=tc['click_disappear'],
+                        has_distractor=tc['has_distractor'],
+                        distractor_count=tc['distractor_count'],
+                    )
 
                 for segment_features in task_dict['segments']:
                     if len(segment_features) >= 2:  # 至少2个点
@@ -486,6 +519,7 @@ class SegmentGazeDataset(Dataset):
         dataset.segment_labels = segment_labels
         dataset.segment_subject_ids = segment_subject_ids
         dataset.segment_task_ids = segment_task_ids
+        dataset.task_config_map = task_config_map  # 新增
         dataset.feature_extractor = SequenceFeatureExtractor(config)
 
         # 应用归一化统计量
@@ -523,10 +557,23 @@ def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     if len(labels) > 0 and labels[0].dim() == 0:
         labels = [l.unsqueeze(0) for l in labels]
 
-    return {
+    result = {
         'features': torch.stack([b['features'] for b in batch]),
         'length': torch.tensor([b['length'] for b in batch], dtype=torch.long),
-        'label': torch.stack(labels),
+        'labels': torch.stack(labels),
         'subject_ids': [b['subject_id'] for b in batch],
         'task_ids': [b['task_id'] for b in batch],
     }
+
+    # 处理任务条件（如果存在）
+    if 'task_conditions' in batch[0]:
+        task_conditions = {
+            'grid_scale': torch.tensor([b['task_conditions']['grid_scale'] for b in batch]),
+            'continuous_thinking': torch.tensor([b['task_conditions']['continuous_thinking'] for b in batch]),
+            'click_disappear': torch.tensor([b['task_conditions']['click_disappear'] for b in batch]),
+            'has_distractor': torch.tensor([b['task_conditions']['has_distractor'] for b in batch]),
+            'has_task_distractor': torch.tensor([b['task_conditions']['has_task_distractor'] for b in batch]),
+        }
+        result['task_conditions'] = task_conditions
+
+    return result

@@ -225,7 +225,15 @@ def process_single_subject(
 
             task_data = {
                 'task_id': trial.task_id,
-                'segments': []
+                'segments': [],
+                # 任务条件（用于任务嵌入）
+                'task_conditions': {
+                    'grid_size': trial.config.grid_size,
+                    'number_range': trial.config.number_range,
+                    'click_disappear': trial.config.click_disappear,
+                    'has_distractor': trial.config.has_distractor,
+                    'distractor_count': trial.config.distractor_count,
+                }
             }
 
             for segment in segments:
