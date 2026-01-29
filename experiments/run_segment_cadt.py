@@ -72,7 +72,7 @@ def run_segment_cadt_experiment(
     Args:
         config_path: 配置文件路径
         data_path: 预处理数据路径
-        target_domain: 目标域 ('test1', 'test2', 'test3')
+        target_domain: 主要目标域 ('test1', 'test2', 'test3')
     """
     # 加载配置
     config = UnifiedConfig.from_json(config_path)
@@ -87,11 +87,15 @@ def run_segment_cadt_experiment(
         input_dim=config.model.input_dim,
     )
 
-    logger.info(f"配置加载完成: {config_path}")
-    logger.info(f"目标域: {target_domain}")
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info(f"CADT 域适应实验 | 配置: {config_path}")
+    logger.info("=" * 70)
+    logger.info(f"主要目标域: {target_domain}")
     logger.info(f"预训练轮数: {config.cadt.pre_train_epochs}")
     logger.info(f"KL权重: {config.cadt.cadt_kl_weight}")
     logger.info(f"Reset模式: {config.cadt.reset_mode}")
+    logger.info("")
 
     # 加载原始数据
     all_data = load_data_splits(data_path)
@@ -105,7 +109,7 @@ def run_segment_cadt_experiment(
     )
     splits = splitter.split(all_data)
 
-    # 创建数据集
+    # 创建源域数据集
     logger.info("创建源域数据集 (train)...")
     train_dataset = SegmentGazeDataset.from_processed_data(
         splits['train'],
@@ -131,25 +135,30 @@ def run_segment_cadt_experiment(
         'acceleration_std': train_dataset.feature_extractor.acceleration_std,
     }
 
-    logger.info(f"创建目标域数据集 ({target_domain})...")
-    test_dataset = SegmentGazeDataset.from_processed_data(
-        splits[target_domain],
-        seq_config,
-        normalizer_stats={
-            'dt_mean': train_dataset.feature_extractor.dt_mean,
-            'dt_std': train_dataset.feature_extractor.dt_std,
-            'velocity_mean': train_dataset.feature_extractor.velocity_mean,
-            'velocity_std': train_dataset.feature_extractor.velocity_std,
-            'acceleration_mean': train_dataset.feature_extractor.acceleration_mean,
-            'acceleration_std': train_dataset.feature_extractor.acceleration_std,
-        },
-        domain=target_domain,
-    )
+    # 创建所有测试集的数据集
+    test_datasets = {}
+    test_loaders = {}
+    for test_domain in ['test1', 'test2', 'test3']:
+        logger.info(f"创建目标域数据集 ({test_domain})...")
+        test_datasets[test_domain] = SegmentGazeDataset.from_processed_data(
+            splits[test_domain],
+            seq_config,
+            normalizer_stats=normalizer_stats,
+            domain=test_domain,
+        )
+        test_loaders[test_domain] = DataLoader(
+            test_datasets[test_domain],
+            batch_size=config.training.batch_size,
+            shuffle=False,
+            num_workers=config.device.num_workers,
+            pin_memory=config.device.pin_memory,
+        )
 
     logger.info(f"源域样本数: {len(train_dataset)}")
-    logger.info(f"目标域样本数: {len(test_dataset)}")
+    for test_domain in ['test1', 'test2', 'test3']:
+        logger.info(f"  {test_domain} 样本数: {len(test_datasets[test_domain])}")
 
-    # 创建数据加载器
+    # 创建训练数据加载器
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.training.batch_size,
@@ -158,16 +167,8 @@ def run_segment_cadt_experiment(
         num_workers=config.device.num_workers,
         pin_memory=config.device.pin_memory,
     )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config.training.batch_size,
-        shuffle=False,
-        num_workers=config.device.num_workers,
-        pin_memory=config.device.pin_memory,
-    )
 
     # 创建训练器
-    logger.info("初始化CADT训练器...")
     trainer = SegmentCADTTrainer(
         config=config,
         seq_config=seq_config,
@@ -176,18 +177,47 @@ def run_segment_cadt_experiment(
 
     # 训练
     output_dir = Path(config.experiment.output_dir) / f'cadt_{target_domain}'
-    logger.info(f"开始训练，输出目录: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    history = trainer.train(train_loader, test_loader, str(output_dir))
+    history = trainer.train(train_loader, test_loaders[target_domain], str(output_dir))
 
-    # 最终评估
-    final_metrics = trainer.evaluate(test_loader)
-    logger.info(f"{target_domain} 最终准确率: {final_metrics['accuracy']:.4f}")
+    # 绘制训练曲线
+    curve_path = output_dir / 'training_curves.png'
+    trainer.plot_training_curves(history, str(curve_path))
+
+    # 在所有测试集上进行最终评估
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("在所有测试集上进行最终评估")
+    logger.info("=" * 70)
+
+    all_results = {}
+    for test_domain in ['test1', 'test2', 'test3']:
+        metrics = trainer.evaluate(test_loaders[test_domain])
+        all_results[test_domain] = metrics
+        logger.info(
+            f"  {test_domain}: | "
+            f"Loss={metrics['loss']:.4f} | "
+            f"Acc={metrics['accuracy']:.4f} | "
+            f"F1={metrics['f1']:.4f} | "
+            f"Prec={metrics['precision']:.4f} | "
+            f"Rec={metrics['recall']:.4f}"
+        )
+
+    # 保存结果
+    import json
+    results_path = output_dir / 'final_results.json'
+    with open(results_path, 'w') as f:
+        serializable_results = {}
+        for domain, metrics in all_results.items():
+            serializable_results[domain] = {k: float(v) for k, v in metrics.items()}
+        json.dump(serializable_results, f, indent=2)
+    logger.info(f"\n结果已保存: {results_path}")
 
     # 保存配置快照
     config.save_snapshot(str(output_dir))
 
-    return history, final_metrics
+    return history, all_results
 
 
 def main():

@@ -15,10 +15,12 @@ reset模式支持：
 
 import logging
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
+import numpy as np
 
 import torch
 from torch.utils.data import DataLoader
+from sklearn.metrics import f1_score, precision_score, recall_score
 
 from src.config import UnifiedConfig
 from src.models.dl_dataset import SequenceConfig
@@ -219,13 +221,13 @@ class SegmentCADTTrainer:
             data_loader: 数据加载器
 
         Returns:
-            评估指标字典
+            评估指标字典（包含 accuracy, f1, precision, recall, loss）
         """
         self.model.eval()
 
         total_loss = 0.0
-        correct = 0
-        total = 0
+        all_preds = []
+        all_labels = []
 
         for batch in data_loader:
             features = batch['features'].to(self.device)
@@ -233,12 +235,25 @@ class SegmentCADTTrainer:
 
             loss, batch_correct, batch_total = self.model.compute_loss(features, labels)
             total_loss += loss * batch_total
-            correct += batch_correct
-            total += batch_total
+
+            # 获取预测结果用于计算 F1
+            f_invariant, _ = self.model.encode(features)
+            pred_logits = self.model.classifier(f_invariant)
+            pred_labels = pred_logits.argmax(dim=1)
+
+            all_preds.extend(pred_labels.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        total = len(all_preds)
 
         return {
             'loss': total_loss / total if total > 0 else 0.0,
-            'accuracy': correct / total if total > 0 else 0.0,
+            'accuracy': (all_preds == all_labels).mean() if total > 0 else 0.0,
+            'f1': f1_score(all_labels, all_preds, average='weighted', zero_division=0) if total > 0 else 0.0,
+            'precision': precision_score(all_labels, all_preds, average='weighted', zero_division=0) if total > 0 else 0.0,
+            'recall': recall_score(all_labels, all_preds, average='weighted', zero_division=0) if total > 0 else 0.0,
         }
 
     def train(
@@ -262,30 +277,43 @@ class SegmentCADTTrainer:
         output_path.mkdir(parents=True, exist_ok=True)
 
         n_epochs = self.config.training.epochs
-        history = {'train_loss': [], 'test_acc': [], 'test_loss': []}
+        history = {
+            'train_loss': [], 'ce_loss': [], 'kl_loss': [],
+            'test_loss': [], 'test_acc': [], 'test_f1': [],
+        }
         best_acc = 0.0
         best_epoch = 0
 
-        logger.info(f"Starting training for {n_epochs} epochs")
-        logger.info(f"Pre-train epochs: {self.pre_train_epochs}")
-        logger.info(f"KL weight: {self.kl_weight}, Target domain: {self.target_domain}")
+        # 打印训练开始信息
+        logger.info("=" * 70)
+        logger.info(f"开始 CADT 域适应训练 | 目标域: {self.target_domain}")
+        logger.info("=" * 70)
+        logger.info(f"总轮数: {n_epochs} | 预训练: {self.pre_train_epochs} | 域适应: {n_epochs - self.pre_train_epochs}")
+        logger.info(f"KL权重: {self.kl_weight} | 域判别权重: {self.dis_weight} | Reset模式: {self.reset_mode}")
+        logger.info("")
 
         for epoch in range(n_epochs):
             # 阶段转换
             if epoch == self.pre_train_epochs:
-                logger.info(f"Epoch {epoch}: 初始化类中心...")
+                logger.info("-" * 70)
+                logger.info(f"[阶段切换] Epoch {epoch}: 初始化类中心并应用重置策略")
                 self.model.eval()
                 self.model.init_centers(train_loader)
-                logger.info(f"类中心初始化完成: {self.model.c.data.cpu()}")
+                logger.info(f"类中心: {self.model.c.data.cpu().numpy()}")
                 self._apply_reset_strategy()
+                logger.info("")
 
             # 训练
             train_metrics = self.train_epoch(train_loader, test_loader, epoch)
             test_metrics = self.evaluate(test_loader)
 
+            # 记录历史
             history['train_loss'].append(train_metrics['total_loss'])
-            history['test_acc'].append(test_metrics['accuracy'])
+            history['ce_loss'].append(train_metrics['ce_loss'])
+            history['kl_loss'].append(train_metrics['kl_loss'])
             history['test_loss'].append(test_metrics['loss'])
+            history['test_acc'].append(test_metrics['accuracy'])
+            history['test_f1'].append(test_metrics['f1'])
 
             # 记录最佳
             if test_metrics['accuracy'] > best_acc:
@@ -293,19 +321,100 @@ class SegmentCADTTrainer:
                 best_epoch = epoch
                 self._save_checkpoint(output_path / 'best_model.pth', epoch)
 
-            # 日志
-            stage = "Pretrain" if epoch < self.pre_train_epochs else "Domain Adapt"
-            logger.info(
-                f"{stage} Epoch {epoch}: "
-                f"train_loss={train_metrics['total_loss']:.4f}, "
-                f"ce_loss={train_metrics['ce_loss']:.4f}, "
-                f"kl_loss={train_metrics['kl_loss']:.4f}, "
-                f"test_acc={test_metrics['accuracy']:.4f}, "
-                f"best_acc={best_acc:.4f} (epoch {best_epoch})"
-            )
+            # 美观日志输出
+            stage = "预训练" if epoch < self.pre_train_epochs else "域适应"
+            stage_color = "\033[93m" if epoch < self.pre_train_epochs else "\033[96m"  # 黄色/青色
+            reset = "\033[0m"
 
-        logger.info(f"Training completed. Best accuracy: {best_acc:.4f} at epoch {best_epoch}")
+            # 简洁格式（每轮）
+            if (epoch + 1) % 5 == 0 or epoch < 5 or epoch >= n_epochs - 5:
+                logger.info(
+                    f"{stage_color}[{stage}]{reset} Epoch {epoch:3d} | "
+                    f"loss={train_metrics['total_loss']:.4f} | "
+                    f"ce={train_metrics['ce_loss']:.4f} | kl={train_metrics['kl_loss']:.4f} | "
+                    f"test_acc={test_metrics['accuracy']:.4f} | test_f1={test_metrics['f1']:.4f}"
+                )
+
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info(f"训练完成! 最佳准确率: {best_acc:.4f} (Epoch {best_epoch})")
+        logger.info("=" * 70)
         return history
+
+    def plot_training_curves(self, history: Dict[str, list], save_path: str):
+        """
+        绘制训练曲线
+
+        Args:
+            history: 训练历史字典
+            save_path: 保存路径
+        """
+        try:
+            import matplotlib.pyplot as plt
+            matplotlib_logger = logging.getLogger('matplotlib')
+            matplotlib_logger.setLevel(logging.WARNING)
+        except ImportError:
+            logger.warning("matplotlib 未安装，跳过绘图")
+            return
+
+        n_epochs = len(history['train_loss'])
+        pre_train_boundary = self.pre_train_epochs
+
+        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+        fig.suptitle(f'CADT Training History - Target: {self.target_domain}', fontsize=14)
+
+        # 1. 训练损失
+        ax = axes[0, 0]
+        ax.plot(history['train_loss'], label='Total Loss', linewidth=1.5)
+        ax.plot(history['ce_loss'], label='CE Loss', linewidth=1.5, alpha=0.7)
+        ax.plot(history['kl_loss'], label='KL Loss', linewidth=1.5, alpha=0.7)
+        ax.axvline(x=pre_train_boundary, color='r', linestyle='--', alpha=0.5, label='Phase Switch')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title('Training Loss')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 2. 测试准确率和F1
+        ax = axes[0, 1]
+        ax.plot(history['test_acc'], label='Accuracy', linewidth=1.5, color='green')
+        ax.plot(history['test_f1'], label='F1 Score', linewidth=1.5, color='orange', alpha=0.8)
+        ax.axvline(x=pre_train_boundary, color='r', linestyle='--', alpha=0.5, label='Phase Switch')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Score')
+        ax.set_title('Test Metrics')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 3. 测试损失
+        ax = axes[1, 0]
+        ax.plot(history['test_loss'], linewidth=1.5, color='red')
+        ax.axvline(x=pre_train_boundary, color='r', linestyle='--', alpha=0.5, label='Phase Switch')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title('Test Loss')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # 4. 详细指标（最后50轮放大）
+        ax = axes[1, 1]
+        start_idx = max(0, n_epochs - 50)
+        ax.plot(range(start_idx, n_epochs), history['test_acc'][start_idx:],
+                label='Accuracy', linewidth=1.5, color='green')
+        ax.plot(range(start_idx, n_epochs), history['test_f1'][start_idx:],
+                label='F1 Score', linewidth=1.5, color='orange', alpha=0.8)
+        if pre_train_boundary >= start_idx:
+            ax.axvline(x=pre_train_boundary, color='r', linestyle='--', alpha=0.5, label='Phase Switch')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Score')
+        ax.set_title(f'Test Metrics (Last {n_epochs - start_idx} Epochs)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info(f"训练曲线已保存: {save_path}")
 
     def _save_checkpoint(self, path: Path, epoch: int):
         """
