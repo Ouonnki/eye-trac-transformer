@@ -295,6 +295,7 @@ class SegmentCADTTrainer:
         for epoch in range(n_epochs):
             # 阶段转换
             if epoch == self.pre_train_epochs:
+                print()  # 换行
                 logger.info("-" * 70)
                 logger.info(f"[阶段切换] Epoch {epoch}: 初始化类中心并应用重置策略")
                 self.model.eval()
@@ -321,20 +322,18 @@ class SegmentCADTTrainer:
                 best_epoch = epoch
                 self._save_checkpoint(output_path / 'best_model.pth', epoch)
 
-            # 美观日志输出
+            # 单行进度条输出
             stage = "预训练" if epoch < self.pre_train_epochs else "域适应"
-            stage_color = "\033[93m" if epoch < self.pre_train_epochs else "\033[96m"  # 黄色/青色
-            reset = "\033[0m"
+            progress = (epoch + 1) / n_epochs * 100
+            print(
+                f"\r[{stage}] Epoch {epoch+1}/{n_epochs} ({progress:>5.1f}%) | "
+                f"loss={train_metrics['total_loss']:.4f} | ce={train_metrics['ce_loss']:.4f} | "
+                f"kl={train_metrics['kl_loss']:.4f} | test_acc={test_metrics['accuracy']:.4f} | "
+                f"test_f1={test_metrics['f1']:.4f} | best={best_acc:.4f}@{best_epoch}",
+                end="", flush=True
+            )
 
-            # 简洁格式（每轮）
-            if (epoch + 1) % 5 == 0 or epoch < 5 or epoch >= n_epochs - 5:
-                logger.info(
-                    f"{stage_color}[{stage}]{reset} Epoch {epoch:3d} | "
-                    f"loss={train_metrics['total_loss']:.4f} | "
-                    f"ce={train_metrics['ce_loss']:.4f} | kl={train_metrics['kl_loss']:.4f} | "
-                    f"test_acc={test_metrics['accuracy']:.4f} | test_f1={test_metrics['f1']:.4f}"
-                )
-
+        print()  # 训练结束后换行
         logger.info("")
         logger.info("=" * 70)
         logger.info(f"训练完成! 最佳准确率: {best_acc:.4f} (Epoch {best_epoch})")
