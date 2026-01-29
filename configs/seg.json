@@ -5,7 +5,7 @@
     "n_repeats": 1,
     "random_seed": 42,
     "experiment_name": "",
-    "output_dir": "outputs/seg_res"
+    "output_dir": "outputs/seg_res-task-emb"
   },
   "model": {
     "input_dim": 7,
@@ -16,15 +16,17 @@
     "task_nhead": 4,
     "task_num_layers": 2,
     "attention_dim": 32,
-    "dropout": 0.1
+    "dropout": 0.1,
+    "use_task_embedding": true,
+    "task_embedding_dim": 16
   },
   "training": {
     "batch_size": 2048,
     "learning_rate": 0.0001,
     "weight_decay": 0.0001,
     "warmup_epochs": 5,
-    "epochs": 1000,
-    "patience": 600,
+    "epochs": 250,
+    "patience": 200,
     "grad_clip": 1.0
   },
   "task": {
