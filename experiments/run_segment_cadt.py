@@ -185,16 +185,22 @@ def run_segment_cadt_experiment(
     curve_path = output_dir / 'training_curves.png'
     trainer.plot_training_curves(history, str(curve_path))
 
-    # 在所有测试集上进行最终评估
+    # 在所有测试集上进行最终评估（对比最终模型 vs 最佳模型）
     logger.info("")
     logger.info("=" * 70)
     logger.info("在所有测试集上进行最终评估")
     logger.info("=" * 70)
 
+    best_model_path = output_dir / 'best_model.pth'
+    has_best_model = best_model_path.exists()
+
     all_results = {}
+
+    # 1. 使用训练结束时的最终模型评估
+    logger.info("\n[最终模型]")
     for test_domain in ['test1', 'test2', 'test3']:
         metrics = trainer.evaluate(test_loaders[test_domain])
-        all_results[test_domain] = metrics
+        all_results[f"{test_domain}_final"] = metrics
         logger.info(
             f"  {test_domain}: | "
             f"Loss={metrics['loss']:.4f} | "
@@ -203,6 +209,26 @@ def run_segment_cadt_experiment(
             f"Prec={metrics['precision']:.4f} | "
             f"Rec={metrics['recall']:.4f}"
         )
+
+    # 2. 加载并使用最佳模型评估
+    if has_best_model:
+        logger.info(f"\n[最佳模型] 加载: {best_model_path}")
+        checkpoint = torch.load(best_model_path, map_location=trainer.device)
+        best_epoch = checkpoint['epoch']
+        trainer.model.load_state_dict(checkpoint['model_state_dict'])
+        logger.info(f"最佳模型来自 Epoch {best_epoch}")
+
+        for test_domain in ['test1', 'test2', 'test3']:
+            metrics = trainer.evaluate(test_loaders[test_domain])
+            all_results[f"{test_domain}_best"] = metrics
+            logger.info(
+                f"  {test_domain}: | "
+                f"Loss={metrics['loss']:.4f} | "
+                f"Acc={metrics['accuracy']:.4f} | "
+                f"F1={metrics['f1']:.4f} | "
+                f"Prec={metrics['precision']:.4f} | "
+                f"Rec={metrics['recall']:.4f}"
+            )
 
     # 保存结果
     import json
