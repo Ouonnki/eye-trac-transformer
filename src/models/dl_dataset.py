@@ -336,9 +336,10 @@ class SegmentGazeDataset(Dataset):
     返回格式：
     - features: (max_seq_len, input_dim) 眼动序列
     - length: 实际序列长度
-    - label: 被试标签（分数/类别）
+    - labels: 被试标签（分数/类别）
     - subject_id: 被试ID（用于推理时聚合）
     - task_id: 任务ID（可选，用于添加任务嵌入）
+    - domain: 域标签（0=源域/train, 1=目标域/test1/test2/test3）
     """
 
     def __init__(
@@ -347,6 +348,7 @@ class SegmentGazeDataset(Dataset):
         config: SequenceConfig,
         feature_extractor: Optional[SequenceFeatureExtractor] = None,
         fit_normalizer: bool = False,
+        domain: str = 'train',  # 新增：域标签 'train'/'test1'/'test2'/'test3'
     ):
         """
         初始化片段级数据集
@@ -356,10 +358,12 @@ class SegmentGazeDataset(Dataset):
             config: 序列配置
             feature_extractor: 特征提取器（如果为None则创建新的）
             fit_normalizer: 是否在当前数据上拟合归一化器
+            domain: 域标签，用于CADT域适应
         """
         self.subjects = subjects
         self.config = config
         self.feature_extractor = feature_extractor or SequenceFeatureExtractor(config)
+        self.domain = domain  # 保存域标签
 
         # 预提取所有特征并展平为片段级
         self._precompute_segment_features()
@@ -429,7 +433,7 @@ class SegmentGazeDataset(Dataset):
         result = {
             'features': torch.from_numpy(padded),
             'length': seq_len,
-            'label': torch.tensor(label_value, dtype=label_dtype),
+            'labels': torch.tensor(label_value, dtype=label_dtype),  # 使用 'labels' 复数形式
             'subject_id': self.segment_subject_ids[idx],
             'task_id': self.segment_task_ids[idx],
         }
@@ -450,6 +454,9 @@ class SegmentGazeDataset(Dataset):
                     'has_task_distractor': 0,
                 }
 
+        # 添加域标签（用于CADT域适应）
+        result['domain'] = 0 if self.domain == 'train' else 1
+
         return result
 
     @classmethod
@@ -458,6 +465,7 @@ class SegmentGazeDataset(Dataset):
         processed_data: List[Dict],
         config: SequenceConfig,
         normalizer_stats: Optional[Dict] = None,
+        domain: str = 'train',  # 新增：域标签
     ) -> 'SegmentGazeDataset':
         """
         直接从预处理数据创建数据集（无需逆向转换）
@@ -520,6 +528,7 @@ class SegmentGazeDataset(Dataset):
         dataset.segment_subject_ids = segment_subject_ids
         dataset.segment_task_ids = segment_task_ids
         dataset.task_config_map = task_config_map  # 新增
+        dataset.domain = domain  # 新增：域标签
         dataset.feature_extractor = SequenceFeatureExtractor(config)
 
         # 应用归一化统计量
@@ -552,7 +561,7 @@ def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     Returns:
         批次数据字典
     """
-    labels = [b['label'] for b in batch]
+    labels = [b['labels'] for b in batch]
     # 检查 label 是否为标量（0维），如果是则转换为 1 维张量
     if len(labels) > 0 and labels[0].dim() == 0:
         labels = [l.unsqueeze(0) for l in labels]
@@ -575,5 +584,12 @@ def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
             'has_task_distractor': torch.tensor([b['task_conditions']['has_task_distractor'] for b in batch]),
         }
         result['task_conditions'] = task_conditions
+
+    # 处理域标签（如果存在）
+    if 'domain' in batch[0]:
+        result['domain'] = torch.tensor(
+            [b['domain'] for b in batch],
+            dtype=torch.float32
+        ).unsqueeze(1)  # (batch, 1) 形状
 
     return result
