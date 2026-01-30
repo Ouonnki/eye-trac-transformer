@@ -274,6 +274,8 @@ class HierarchicalEncoder(nn.Module):
         model_config: ModelConfig,
         seq_config: SequenceConfig,
         use_gradient_checkpointing: bool = False,
+        use_task_embedding: bool = False,
+        task_embedding_dim: int = 16,
     ):
         """
         初始化
@@ -282,6 +284,8 @@ class HierarchicalEncoder(nn.Module):
             model_config: 模型架构配置
             seq_config: 序列配置
             use_gradient_checkpointing: 是否使用梯度检查点
+            use_task_embedding: 是否使用任务嵌入
+            task_embedding_dim: 任务嵌入维度
         """
         super().__init__()
 
@@ -298,6 +302,8 @@ class HierarchicalEncoder(nn.Module):
             dropout=model_config.dropout,
             max_seq_len=seq_config.max_seq_len,
             use_gradient_checkpointing=use_gradient_checkpointing,
+            use_task_embedding=use_task_embedding,
+            task_embedding_dim=task_embedding_dim,
         )
 
         # 任务聚合器（从片段到任务）
@@ -331,6 +337,7 @@ class HierarchicalEncoder(nn.Module):
         segment_mask: torch.Tensor,
         task_mask: torch.Tensor,
         segment_lengths: Optional[torch.Tensor] = None,
+        task_conditions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         前向传播
@@ -340,6 +347,7 @@ class HierarchicalEncoder(nn.Module):
             segment_mask: (batch, max_tasks, max_segments) 有效片段掩码
             task_mask: (batch, max_tasks) 有效任务掩码
             segment_lengths: (batch, max_tasks, max_segments) 每个片段的实际长度
+            task_conditions: (batch, max_tasks, 5) 任务条件，每个任务一个5维向量
 
         Returns:
             subject_repr: (batch, task_d_model) 被试表示
@@ -361,8 +369,18 @@ class HierarchicalEncoder(nn.Module):
         else:
             seq_mask = None
 
+        # 处理任务条件：从 (batch, max_tasks, 5) 扩展到 (batch*max_tasks*max_segments, 5)
+        # 每个片段获得其所属任务的任务条件
+        flat_task_conditions = None
+        if task_conditions is not None:
+            # task_conditions: (batch, max_tasks, 5)
+            # 先扩展为 (batch, max_tasks, max_segments, 5)
+            expanded = task_conditions.unsqueeze(2).expand(-1, -1, self.max_segments, -1)
+            # 再展平为 (batch*max_tasks*max_segments, 5)
+            flat_task_conditions = expanded.reshape(batch_size * self.max_tasks * self.max_segments, -1)
+
         # 编码
-        segment_reprs, _ = self.segment_encoder(flat_segments, seq_mask)  # (batch*tasks*segments, d_model)
+        segment_reprs, _ = self.segment_encoder(flat_segments, seq_mask, flat_task_conditions)  # (batch*tasks*segments, d_model)
 
         # 重塑为 (batch, tasks, segments, d_model)
         segment_reprs = segment_reprs.view(batch_size, self.max_tasks, self.max_segments, -1)

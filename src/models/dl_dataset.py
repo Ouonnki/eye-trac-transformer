@@ -215,6 +215,8 @@ class HierarchicalGazeDataset(Dataset):
 
     def _precompute_features(self) -> None:
         """预计算所有被试的特征"""
+        from src.models.task_embedding import TaskCondition
+
         self.all_subject_features = []
 
         for subject in self.subjects:
@@ -227,6 +229,14 @@ class HierarchicalGazeDataset(Dataset):
             for trial in subject.trials[:self.config.max_tasks]:
                 task_data = {
                     'task_id': trial.task_id,
+                    'config': trial.config,  # 保存原始任务配置
+                    'task_condition': TaskCondition.from_task_config(
+                        grid_size=trial.config.grid_size,
+                        number_range=trial.config.number_range,
+                        click_disappear=trial.config.click_disappear,
+                        has_distractor=trial.config.has_distractor,
+                        distractor_count=trial.config.distractor_count,
+                    ),  # 保存规范化的任务条件
                     'segments': []
                 }
 
@@ -300,9 +310,36 @@ class HierarchicalGazeDataset(Dataset):
             'segment_mask': torch.from_numpy(segment_mask),
             'task_lengths': torch.from_numpy(task_lengths),
             'task_mask': torch.from_numpy(task_mask),
+            'task_conditions': torch.from_numpy(self._get_task_conditions(subject_data)),
             'label': torch.tensor(subject_data['label'], dtype=torch.float32),
             'subject_id': subject_data['subject_id'],
         }
+
+    def _get_task_conditions(self, subject_data: Dict) -> np.ndarray:
+        """
+        获取任务条件张量
+
+        Args:
+            subject_data: 被试数据字典
+
+        Returns:
+            (max_tasks, 5) 的任务条件数组
+            每行格式: [grid_scale, continuous_thinking, click_disappear, has_distractor, has_task_distractor]
+        """
+        task_conditions = np.zeros((self.config.max_tasks, 5), dtype=np.int64)
+
+        for t_idx, task_data in enumerate(subject_data['tasks']):
+            if 'task_condition' in task_data and task_data['task_condition'] is not None:
+                tc = task_data['task_condition']
+                task_conditions[t_idx] = [
+                    tc.grid_scale,
+                    tc.continuous_thinking,
+                    tc.click_disappear,
+                    tc.has_distractor,
+                    tc.has_task_distractor,
+                ]
+
+        return task_conditions
 
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
@@ -321,6 +358,7 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         'segment_mask': torch.stack([b['segment_mask'] for b in batch]),
         'task_lengths': torch.stack([b['task_lengths'] for b in batch]),
         'task_mask': torch.stack([b['task_mask'] for b in batch]),
+        'task_conditions': torch.stack([b['task_conditions'] for b in batch]),
         'label': torch.stack([b['label'] for b in batch]),
         'subject_ids': [b['subject_id'] for b in batch],
     }

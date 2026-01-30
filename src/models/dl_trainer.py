@@ -453,6 +453,7 @@ class DeepLearningTrainer:
             task_mask = batch['task_mask'].to(self.device, non_blocking=True)
             segment_lengths = batch['segment_lengths'].to(self.device, non_blocking=True)
             labels = batch['label'].to(self.device, non_blocking=True)
+            task_conditions = batch['task_conditions'].to(self.device, non_blocking=True) if 'task_conditions' in batch else None
 
             optimizer.zero_grad(set_to_none=True)  # 更高效的梯度清零
 
@@ -464,6 +465,7 @@ class DeepLearningTrainer:
                         segment_mask=segment_mask,
                         task_mask=task_mask,
                         segment_lengths=segment_lengths,
+                        task_conditions=task_conditions,
                     )
                     loss = criterion(outputs['prediction'], labels)
 
@@ -484,6 +486,7 @@ class DeepLearningTrainer:
                     segment_mask=segment_mask,
                     task_mask=task_mask,
                     segment_lengths=segment_lengths,
+                    task_conditions=task_conditions,
                 )
                 loss = criterion(outputs['prediction'], labels)
 
@@ -533,6 +536,7 @@ class DeepLearningTrainer:
                 task_mask = batch['task_mask'].to(self.device, non_blocking=True)
                 segment_lengths = batch['segment_lengths'].to(self.device, non_blocking=True)
                 labels = batch['label'].to(self.device, non_blocking=True)
+                task_conditions = batch['task_conditions'].to(self.device, non_blocking=True) if 'task_conditions' in batch else None
 
                 # 混合精度前向传播
                 if self.use_amp:
@@ -542,6 +546,7 @@ class DeepLearningTrainer:
                             segment_mask=segment_mask,
                             task_mask=task_mask,
                             segment_lengths=segment_lengths,
+                            task_conditions=task_conditions,
                         )
                         loss = criterion(outputs['prediction'], labels)
                 else:
@@ -550,6 +555,7 @@ class DeepLearningTrainer:
                         segment_mask=segment_mask,
                         task_mask=task_mask,
                         segment_lengths=segment_lengths,
+                        task_conditions=task_conditions,
                     )
                     loss = criterion(outputs['prediction'], labels)
 

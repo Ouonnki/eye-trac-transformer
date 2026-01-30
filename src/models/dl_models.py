@@ -60,6 +60,8 @@ class HierarchicalTransformerNetwork(BaseModel):
             model_config=model_config,
             seq_config=seq_config,
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
+            use_task_embedding=model_config.use_task_embedding,
+            task_embedding_dim=model_config.task_embedding_dim,
         )
 
         # 预测头
@@ -107,6 +109,7 @@ class HierarchicalTransformerNetwork(BaseModel):
         segment_mask: torch.Tensor,
         task_mask: torch.Tensor,
         segment_lengths: Optional[torch.Tensor] = None,
+        task_conditions: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         前向传播
@@ -116,6 +119,7 @@ class HierarchicalTransformerNetwork(BaseModel):
             segment_mask: (batch, max_tasks, max_segments) 有效片段掩码
             task_mask: (batch, max_tasks) 有效任务掩码
             segment_lengths: (batch, max_tasks, max_segments) 每个片段的实际长度
+            task_conditions: (batch, max_tasks, 5) 任务条件
 
         Returns:
             字典包含：
@@ -130,6 +134,7 @@ class HierarchicalTransformerNetwork(BaseModel):
             segment_mask=segment_mask,
             task_mask=task_mask,
             segment_lengths=segment_lengths,
+            task_conditions=task_conditions,
         )
 
         # 预测
