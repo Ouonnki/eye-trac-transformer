@@ -10,6 +10,7 @@
 需要先运行 scripts/preprocess_data.py 预处理数据。
 """
 
+import argparse
 import os
 import sys
 import logging
@@ -617,11 +618,11 @@ def save_results(results: Dict, output_dir: str, config: UnifiedConfig) -> None:
         logger.info(f'Predictions saved to {predictions_path}')
 
 
-def load_config(config_path: Optional[str] = None) -> tuple[UnifiedConfig, SequenceConfig]:
+def load_config(config_path: str) -> tuple[UnifiedConfig, SequenceConfig]:
     """
     加载训练配置
 
-    从 JSON 文件加载配置，默认使用 configs/default.json
+    从 JSON 文件加载配置
 
     Args:
         config_path: 配置文件路径
@@ -629,10 +630,6 @@ def load_config(config_path: Optional[str] = None) -> tuple[UnifiedConfig, Seque
     Returns:
         (UnifiedConfig 实例, SequenceConfig 实例)
     """
-    # 确定配置文件路径
-    if config_path is None:
-        config_path = os.environ.get('CONFIG', 'configs/default.json')
-
     # 加载配置
     logger.info(f'Loading config from: {config_path}')
     config = UnifiedConfig.from_json(config_path)
@@ -643,25 +640,48 @@ def load_config(config_path: Optional[str] = None) -> tuple[UnifiedConfig, Seque
     return config, seq_config
 
 
+def parse_args() -> argparse.Namespace:
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description='层级 Transformer 网络眼动注意力预测实验'
+    )
+    parser.add_argument(
+        '--config', '-c',
+        type=str,
+        default='configs/default.json',
+        help='配置文件路径 (默认: configs/default.json)'
+    )
+    parser.add_argument(
+        '--data', '-d',
+        type=str,
+        default='data/processed/processed_data.pkl',
+        help='预处理数据路径 (默认: data/processed/processed_data.pkl)'
+    )
+    return parser.parse_args()
+
+
 def main():
     """主函数"""
+    # 解析命令行参数
+    args = parse_args()
+
     print('=' * 70)
     print('Hierarchical Transformer Network for Gaze Attention Prediction')
     print('=' * 70)
 
     # ============================================================
-    # 路径配置
-    # ============================================================
-    processed_data_path = 'data/processed/processed_data.pkl'  # 预处理数据路径
-    base_output_dir = 'outputs/dl_models'  # 基础输出目录
-
-    # ============================================================
     # 加载配置
     # ============================================================
-    config, seq_config = load_config()
+    config, seq_config = load_config(args.config)
+
+    # ============================================================
+    # 路径配置
+    # ============================================================
+    processed_data_path = args.data  # 预处理数据路径
 
     # 打印配置摘要
     print(f'\n{"="*50}')
+    print(f'Config: {args.config}')
     print(f'Task Type: {config.task.type}')
     print(f'{"="*50}')
     print(f'Processed Data: {processed_data_path}')
