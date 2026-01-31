@@ -98,7 +98,7 @@ class GazeTransformerEncoder(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        task_conditions: Optional[Dict[str, torch.Tensor]] = None,
+        task_conditions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         前向传播
@@ -106,12 +106,12 @@ class GazeTransformerEncoder(nn.Module):
         Args:
             x: (batch, seq_len, input_dim) 眼动序列
             mask: (batch, seq_len) 有效位置掩码（True 表示有效）
-            task_conditions: 任务条件字典，包含:
-                - grid_scale: (batch,)
-                - continuous_thinking: (batch,)
-                - click_disappear: (batch,)
-                - has_distractor: (batch,)
-                - has_task_distractor: (batch,)
+            task_conditions: (batch, 5) 任务条件张量，列顺序为:
+                - grid_scale: 视野规模等级 (1-4)
+                - continuous_thinking: 思维连续性 (0-1)
+                - click_disappear: 点击消失 (0-1)
+                - has_distractor: 背景干扰 (0-1)
+                - has_task_distractor: 任务干扰 (0-1)
 
         Returns:
             output: (batch, d_model) 片段表示
@@ -128,12 +128,13 @@ class GazeTransformerEncoder(nn.Module):
 
         # 添加任务嵌入（在位置编码之前）
         if self.use_task_embedding and task_conditions is not None:
+            # 从 (batch, 5) 张量中提取各列
             task_emb = self.task_embedding(
-                grid_scale=task_conditions['grid_scale'],
-                continuous_thinking=task_conditions['continuous_thinking'],
-                click_disappear=task_conditions['click_disappear'],
-                has_distractor=task_conditions['has_distractor'],
-                has_task_distractor=task_conditions['has_task_distractor'],
+                grid_scale=task_conditions[:, 0],
+                continuous_thinking=task_conditions[:, 1],
+                click_disappear=task_conditions[:, 2],
+                has_distractor=task_conditions[:, 3],
+                has_task_distractor=task_conditions[:, 4],
             )  # (batch, d_model)
 
             # 广播到所有位置（包括 [CLS] token）
