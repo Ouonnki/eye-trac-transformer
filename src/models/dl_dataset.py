@@ -352,16 +352,21 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     Returns:
         批次数据字典
     """
-    return {
+    result = {
         'segments': torch.stack([b['segments'] for b in batch]),
         'segment_lengths': torch.stack([b['segment_lengths'] for b in batch]),
         'segment_mask': torch.stack([b['segment_mask'] for b in batch]),
         'task_lengths': torch.stack([b['task_lengths'] for b in batch]),
         'task_mask': torch.stack([b['task_mask'] for b in batch]),
-        'task_conditions': torch.stack([b['task_conditions'] for b in batch]),
         'label': torch.stack([b['label'] for b in batch]),
         'subject_ids': [b['subject_id'] for b in batch],
     }
+
+    # 只有当 batch 中第一个样本包含 task_conditions 时才处理
+    if 'task_conditions' in batch[0]:
+        result['task_conditions'] = torch.stack([b['task_conditions'] for b in batch])
+
+    return result
 
 
 class SegmentGazeDataset(Dataset):

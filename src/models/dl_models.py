@@ -55,6 +55,8 @@ class HierarchicalTransformerNetwork(BaseModel):
         self.max_tasks = seq_config.max_tasks
         self.max_segments = seq_config.max_segments
 
+        super().__init__()  # 调用 nn.Module 的初始化
+
         # 编码器（复用）
         self.encoder = HierarchicalEncoder(
             model_config=model_config,

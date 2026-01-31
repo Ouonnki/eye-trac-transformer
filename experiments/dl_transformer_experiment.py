@@ -57,6 +57,7 @@ class LightweightGazeDataset(Dataset):
         fit_normalizer: bool = False,
         normalizer_stats: Optional[Dict] = None,
         task_type: str = 'classification',  # 任务类型
+        use_task_embedding: bool = False,  # 是否使用任务嵌入
     ):
         """
         初始化
@@ -67,10 +68,12 @@ class LightweightGazeDataset(Dataset):
             fit_normalizer: 是否拟合归一化器
             normalizer_stats: 已有的归一化统计量
             task_type: 任务类型 ('classification' 或 'regression')
+            use_task_embedding: 是否使用任务嵌入
         """
         self.data = data
         self.config = config
         self.task_type = task_type
+        self.use_task_embedding = use_task_embedding
 
         # 归一化统计量
         if normalizer_stats is not None:
@@ -152,6 +155,9 @@ class LightweightGazeDataset(Dataset):
         task_lengths = np.zeros(self.config.max_tasks, dtype=np.int64)
         task_mask = np.zeros(self.config.max_tasks, dtype=np.bool_)
 
+        # 任务条件张量
+        task_conditions = np.zeros((self.config.max_tasks, 5), dtype=np.int64)
+
         # 填充数据（数据已在 __init__ 中预归一化）
         for t_idx, task in enumerate(subject_data['tasks'][:self.config.max_tasks]):
             num_segments = min(len(task['segments']), self.config.max_segments)
@@ -165,6 +171,23 @@ class LightweightGazeDataset(Dataset):
                     segment_lengths[t_idx, s_idx] = seq_len
                     segment_mask[t_idx, s_idx] = True
 
+            # 处理任务条件
+            if self.use_task_embedding and 'task_conditions' in task:
+                tc = task['task_conditions']
+                # grid_scale 映射: 9→1, 16→2, 25→3, 36→4
+                grid_to_scale = {9: 1, 16: 2, 25: 3, 36: 4}
+                grid_scale = grid_to_scale.get(tc.get('grid_size', 25), 3)
+                # continuous_thinking: 0 if number_range[1] < 99 else 1
+                number_range = tc.get('number_range', [1, 25])
+                continuous_thinking = 0 if number_range[1] < 99 else 1
+                task_conditions[t_idx] = [
+                    grid_scale,
+                    continuous_thinking,
+                    int(tc.get('click_disappear', False)),
+                    int(tc.get('has_distractor', False)),
+                    int(tc.get('distractor_count', 0) > 0),
+                ]
+
         # 根据任务类型返回不同的标签
         if self.task_type == 'classification':
             # 分类任务：类别标签需要是 0-indexed
@@ -173,7 +196,7 @@ class LightweightGazeDataset(Dataset):
             # 回归任务：使用总分
             label = torch.tensor(subject_data['label'], dtype=torch.float32)
 
-        return {
+        result = {
             'segments': torch.from_numpy(segments),
             'segment_lengths': torch.from_numpy(segment_lengths),
             'segment_mask': torch.from_numpy(segment_mask),
@@ -182,6 +205,12 @@ class LightweightGazeDataset(Dataset):
             'label': label,
             'subject_id': subject_data['subject_id'],
         }
+
+        # 只有在启用任务嵌入时才返回任务条件
+        if self.use_task_embedding:
+            result['task_conditions'] = torch.from_numpy(task_conditions)
+
+        return result
 
 
 def load_processed_data(data_path: str) -> List[Dict]:
@@ -246,6 +275,7 @@ def run_2x2_experiment(
             config=seq_config,
             fit_normalizer=True,
             task_type=config.task.type,
+            use_task_embedding=config.model.use_task_embedding,
         )
 
         # 所有测试集使用相同的归一化参数
@@ -258,6 +288,7 @@ def run_2x2_experiment(
                     fit_normalizer=False,
                     normalizer_stats=train_dataset.stats,
                     task_type=config.task.type,
+                    use_task_embedding=config.model.use_task_embedding,
                 )
 
         # 创建训练器并训练

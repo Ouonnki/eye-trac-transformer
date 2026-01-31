@@ -8,11 +8,13 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+import torch.nn as nn
+
 from src.config import UnifiedConfig
 from src.models.dl_dataset import SequenceConfig
 
 
-class BaseModel:
+class BaseModel(nn.Module):
     """
     模型基类
 
@@ -22,6 +24,9 @@ class BaseModel:
     1. from_config() 类方法：从 UnifiedConfig 创建模型实例
     2. 标准化的前向传播接口
     """
+
+    def __init__(self):
+        super().__init__()
 
     @classmethod
     @abstractmethod
