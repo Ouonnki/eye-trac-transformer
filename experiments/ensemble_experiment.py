@@ -251,10 +251,10 @@ def create_datasets(
         use_task_embedding=getattr(config.model, 'use_task_embedding', False),
     )
     # 使用 SegmentGazeDataset.from_processed_data 创建片段数据集
-    # 注意：不传递 normalizer_stats，让片段数据集使用训练时的归一化方式
-    # 因为数据已经在预处理时被归一化了
+    # 片段模型训练时也使用了归一化，所以需要传递归一化统计量
+    # 注意：使用原始 data，因为 from_processed_data 会内部处理归一化
     segment_dataset = SegmentGazeDataset.from_processed_data(
-        data, seq_config, normalizer_stats=None  # 不进行额外归一化
+        data, seq_config, normalizer_stats=normalizer_stats
     )
     return hierarchical_dataset, segment_dataset
 
