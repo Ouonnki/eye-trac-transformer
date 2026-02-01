@@ -174,8 +174,8 @@ class LightweightGazeDataset(Dataset):
                     segment_lengths[t_idx, s_idx] = seq_len
                     segment_mask[t_idx, s_idx] = True
 
-            # 处理任务条件
-            if self.use_task_embedding and 'task_conditions' in task:
+            # 处理任务条件（总是处理，用于条件感知集成策略）
+            if 'task_conditions' in task:
                 tc = task['task_conditions']
                 # grid_scale 映射: 9→1, 16→2, 25→3, 36→4
                 grid_to_scale = {9: 1, 16: 2, 25: 3, 36: 4}
@@ -207,7 +207,9 @@ class LightweightGazeDataset(Dataset):
             'subject_id': subject_data['subject_id'],
         }
 
-        if self.use_task_embedding:
+        # 总是包含任务条件（用于条件感知集成策略）
+        # 如果第一个任务有 task_conditions，说明数据包含此信息
+        if subject_data['tasks'] and 'task_conditions' in subject_data['tasks'][0]:
             result['task_conditions'] = torch.from_numpy(task_conditions)
 
         return result
