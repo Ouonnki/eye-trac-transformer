@@ -1,0 +1,38 @@
+{
+  "train": {
+    "class_1": 12,
+    "class_2": 74,
+    "class_3": 14,
+    "total": 100,
+    "class_1_ratio": 0.12,
+    "class_2_ratio": 0.74,
+    "class_3_ratio": 0.14
+  },
+  "test1": {
+    "class_1": 13,
+    "class_2": 37,
+    "class_3": 7,
+    "total": 57,
+    "class_1_ratio": 0.228,
+    "class_2_ratio": 0.649,
+    "class_3_ratio": 0.123
+  },
+  "test2": {
+    "class_1": 12,
+    "class_2": 74,
+    "class_3": 14,
+    "total": 100,
+    "class_1_ratio": 0.12,
+    "class_2_ratio": 0.74,
+    "class_3_ratio": 0.14
+  },
+  "test3": {
+    "class_1": 13,
+    "class_2": 37,
+    "class_3": 7,
+    "total": 57,
+    "class_1_ratio": 0.228,
+    "class_2_ratio": 0.649,
+    "class_3_ratio": 0.123
+  }
+}

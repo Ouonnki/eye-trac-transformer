@@ -1,0 +1,62 @@
+{
+  "test2": {
+    "confusion_matrix": [
+      [
+        15,
+        0,
+        0
+      ],
+      [
+        71,
+        0,
+        0
+      ],
+      [
+        9,
+        5,
+        0
+      ]
+    ],
+    "recalls": {
+      "class_1_recall": 1.0,
+      "class_2_recall": 0.0,
+      "class_3_recall": 0.0
+    },
+    "prediction_distribution": {
+      "predicted_class_1": 95,
+      "predicted_class_2": 5,
+      "predicted_class_3": 0
+    },
+    "total_samples": 100
+  },
+  "test3": {
+    "confusion_matrix": [
+      [
+        10,
+        0,
+        0
+      ],
+      [
+        39,
+        1,
+        0
+      ],
+      [
+        4,
+        3,
+        0
+      ]
+    ],
+    "recalls": {
+      "class_1_recall": 1.0,
+      "class_2_recall": 0.025,
+      "class_3_recall": 0.0
+    },
+    "prediction_distribution": {
+      "predicted_class_1": 53,
+      "predicted_class_2": 4,
+      "predicted_class_3": 0
+    },
+    "total_samples": 57
+  }
+}
