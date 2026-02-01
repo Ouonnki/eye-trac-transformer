@@ -122,10 +122,10 @@ class LearnedFusion(nn.Module):
         # 处理任务条件
         if task_conditions is not None:
             if task_conditions.dim() == 3:
-                # (batch, max_tasks, 5) -> 取平均
-                task_cond = task_conditions.mean(dim=1)  # (batch, 5)
+                # (batch, max_tasks, 5) -> 转换为浮点数后取平均
+                task_cond = task_conditions.float().mean(dim=1)  # (batch, 5)
             else:
-                task_cond = task_conditions  # (batch, 5)
+                task_cond = task_conditions.float()  # (batch, 5)
             # 归一化到 [0, 1]
             task_cond = task_cond / torch.tensor([4., 1., 1., 1., 1.], device=task_cond.device)
             features.append(task_cond)
@@ -582,8 +582,8 @@ class EnsemblePredictor:
             task_cond_input = None
             if task_conditions_list and task_conditions_list[0] is not None:
                 all_task_conditions = torch.cat(task_conditions_list, dim=0)  # (N, max_tasks, 5)
-                # 取平均任务条件
-                task_cond_input = all_task_conditions.mean(dim=1)  # (N, 5)
+                # 转换为浮点数后再取平均
+                task_cond_input = all_task_conditions.float().mean(dim=1)  # (N, 5)
 
             # 准备被试信息
             if known_subjects is not None:
