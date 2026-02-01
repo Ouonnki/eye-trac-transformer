@@ -116,7 +116,7 @@ class EnsemblePredictor:
         self.hierarchical_model = HierarchicalTransformerNetwork.from_config(
             self.config, self.seq_config, num_classes=self.num_classes
         )
-        state_dict = torch.load(hier_path, map_location=self.device)
+        state_dict = torch.load(hier_path, map_location=self.device, weights_only=False)
         # 处理 DataParallel 保存的权重
         if any(k.startswith('module.') for k in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
@@ -129,7 +129,7 @@ class EnsemblePredictor:
         self.segment_model = SegmentEncoder.from_config(
             self.config, self.seq_config, num_classes=self.num_classes
         )
-        state_dict = torch.load(seg_path, map_location=self.device)
+        state_dict = torch.load(seg_path, map_location=self.device, weights_only=False)
         if any(k.startswith('module.') for k in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.segment_model.load_state_dict(state_dict)
