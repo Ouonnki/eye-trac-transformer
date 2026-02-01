@@ -223,7 +223,7 @@ class EnsemblePredictor:
     def predict_hierarchical(
         self,
         dataloader: DataLoader,
-    ) -> Tuple[np.ndarray, np.ndarray, List[Optional[torch.Tensor]]]:
+    ) -> Tuple[np.ndarray, np.ndarray, List[str], List[Optional[torch.Tensor]]]:
         """
         使用层级模型进行预测
 
@@ -231,10 +231,11 @@ class EnsemblePredictor:
             dataloader: 层级数据集的 DataLoader
 
         Returns:
-            (probs, labels, task_conditions_list): 概率预测、真实标签、任务条件列表
+            (probs, labels, subject_ids, task_conditions_list): 概率预测、真实标签、被试ID列表、任务条件列表
         """
         all_probs = []
         all_labels = []
+        all_subject_ids = []
         all_task_conditions = []
 
         for batch in dataloader:
@@ -264,11 +265,14 @@ class EnsemblePredictor:
             all_probs.append(probs.cpu().numpy())
             # 注意：collate_fn 返回的是 'label' 而非 'labels'
             all_labels.append(batch['label'].numpy())
+            # 收集被试ID
+            all_subject_ids.extend(batch['subject_ids'])
             all_task_conditions.append(task_conditions)
 
         return (
             np.concatenate(all_probs, axis=0),
             np.concatenate(all_labels, axis=0),
+            all_subject_ids,
             all_task_conditions,
         )
 
@@ -276,7 +280,7 @@ class EnsemblePredictor:
     def predict_segment_aggregated(
         self,
         segment_dataset: SegmentGazeDataset,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Dict[str, Tuple[np.ndarray, int]]:
         """
         使用片段模型进行预测并聚合到被试级
 
@@ -284,7 +288,7 @@ class EnsemblePredictor:
             segment_dataset: 片段数据集
 
         Returns:
-            (probs, labels): 被试级概率预测和真实标签
+            字典：{subject_id: (probs, label)}
         """
         dataloader = DataLoader(
             segment_dataset,
@@ -327,19 +331,19 @@ class EnsemblePredictor:
         segment_probs = np.concatenate(segment_probs, axis=0)
         segment_labels = np.concatenate(segment_labels, axis=0)
 
-        # 聚合到被试级（按被试ID分组取平均）
-        unique_subjects = list(dict.fromkeys(segment_subject_ids))  # 保持顺序
-        subject_probs = []
-        subject_labels = []
+        # 聚合到被试级（返回字典便于按ID查找）
+        subject_results = {}
+        unique_subjects = list(dict.fromkeys(segment_subject_ids))
 
         for subject_id in unique_subjects:
             mask = [i for i, sid in enumerate(segment_subject_ids) if sid == subject_id]
             # 取该被试所有片段概率的平均
-            subject_probs.append(segment_probs[mask].mean(axis=0))
+            avg_probs = segment_probs[mask].mean(axis=0)
             # 标签应该都相同
-            subject_labels.append(segment_labels[mask[0]])
+            label = segment_labels[mask[0]]
+            subject_results[subject_id] = (avg_probs, label)
 
-        return np.array(subject_probs), np.array(subject_labels)
+        return subject_results
 
     def predict(
         self,
@@ -372,20 +376,44 @@ class EnsemblePredictor:
             shuffle=False,
             collate_fn=collate_fn,
         )
-        hier_probs, hier_labels, task_conditions_list = self.predict_hierarchical(hier_dataloader)
+        hier_probs, hier_labels, hier_subject_ids, task_conditions_list = self.predict_hierarchical(hier_dataloader)
 
-        # 片段模型预测（聚合到被试级）
-        seg_probs, seg_labels = self.predict_segment_aggregated(segment_dataset)
+        # 片段模型预测（聚合到被试级，返回字典）
+        seg_results = self.predict_segment_aggregated(segment_dataset)
+
+        # 按照层级模型的被试顺序对齐片段模型的预测
+        seg_probs = []
+        seg_labels = []
+        missing_subjects = []
+
+        for subject_id in hier_subject_ids:
+            if subject_id in seg_results:
+                probs, label = seg_results[subject_id]
+                seg_probs.append(probs)
+                seg_labels.append(label)
+            else:
+                missing_subjects.append(subject_id)
+                # 如果片段模型没有这个被试，使用均匀分布
+                seg_probs.append(np.ones(self.num_classes) / self.num_classes)
+                seg_labels.append(0)
+
+        if missing_subjects:
+            logger.warning(f"片段模型缺少 {len(missing_subjects)} 个被试: {missing_subjects[:5]}...")
+
+        seg_probs = np.array(seg_probs)
+        seg_labels = np.array(seg_labels)
 
         # 验证标签一致性
         if not np.array_equal(hier_labels, seg_labels):
-            logger.warning("层级模型和片段模型的标签顺序不一致，可能影响集成结果")
+            # 打印调试信息
+            mismatch_count = np.sum(hier_labels != seg_labels)
+            logger.warning(f"层级模型和片段模型有 {mismatch_count}/{len(hier_labels)} 个标签不匹配")
 
         # 计算集成权重
         batch_size = len(hier_labels)
 
         # 对于条件感知策略，需要基于任务条件计算权重
-        if self.ensemble_config.strategy == "condition_aware" and task_conditions_list[0] is not None:
+        if self.ensemble_config.strategy == "condition_aware" and task_conditions_list and task_conditions_list[0] is not None:
             # 逐样本计算权重
             all_hier_weights = []
             for tc in task_conditions_list:
