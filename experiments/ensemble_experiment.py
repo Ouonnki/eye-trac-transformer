@@ -483,7 +483,7 @@ def compare_strategies(
     Returns:
         比较结果
     """
-    strategies = ["fixed", "condition_aware", "dual_aware"]
+    strategies = ["fixed", "condition_aware", "dual_aware", "learned"]
     all_results = {}
 
     for strategy in strategies:
@@ -537,7 +537,7 @@ def main():
     parser.add_argument('--output', type=str, default='outputs/ensemble',
                        help='输出目录')
     parser.add_argument('--strategy', type=str, default='condition_aware',
-                       choices=['fixed', 'condition_aware', 'dual_aware', 'compare'],
+                       choices=['fixed', 'condition_aware', 'dual_aware', 'learned', 'compare'],
                        help='集成策略（compare 表示比较所有策略）')
 
     args = parser.parse_args()

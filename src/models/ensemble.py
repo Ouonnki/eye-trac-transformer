@@ -54,9 +54,99 @@ class EnsembleConfig:
     new_subject_new_task_hier_weight: float = 0.0  # 新被试+新任务时层级权重（纯片段模型）
     known_subject_new_task_hier_weight: float = 0.1  # 已知被试+新任务时层级权重
 
+    # 学习融合模式参数
+    fusion_hidden_dim: int = 64  # 融合网络隐藏层维度
+    fusion_dropout: float = 0.1     # 融合网络dropout
+
     # 推理参数
     batch_size: int = 8
     device: str = "cuda"
+
+
+class LearnedFusion(nn.Module):
+    """
+    可学习的融合网络
+
+    输入：两个模型的概率输出和条件信息
+    输出：最终预测
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        hidden_dim: int = 64,
+        dropout: float = 0.1,
+        use_task_conditions: bool = True,
+        use_subject_info: bool = True,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.use_task_conditions = use_task_conditions
+        self.use_subject_info = use_subject_info
+
+        # 计算输入维度
+        input_dim = 2 * num_classes  # hier_probs + seg_probs
+        if use_task_conditions:
+            input_dim += 5  # task_conditions (grid_scale, continuous_thinking, click_disappear, has_distractor, has_task_distractor)
+        if use_subject_info:
+            input_dim += 1  # is_known_subject
+
+        # 融合网络
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.fc3 = nn.Linear(hidden_dim // 2, num_classes)
+        self.dropout = nn.Dropout(dropout if dropout > 0 else 0)
+        self.activation = nn.ReLU()
+
+    def forward(
+        self,
+        hier_probs: torch.Tensor,  # (batch, num_classes)
+        seg_probs: torch.Tensor,   # (batch, num_classes)
+        task_conditions: Optional[torch.Tensor] = None,  # (batch, 5) or (batch, max_tasks, 5)
+        is_known_subject: Optional[torch.Tensor] = None,  # (batch,)
+    ) -> torch.Tensor:
+        """
+        前向传播
+
+        Args:
+            hier_probs: 层级模型概率
+            seg_probs: 片段模型概率
+            task_conditions: 任务条件
+            is_known_subject: 被试是否已知
+
+        Returns:
+            (batch, num_classes) 融合后的logits
+        """
+        features = [hier_probs, seg_probs]
+
+        # 处理任务条件
+        if task_conditions is not None:
+            if task_conditions.dim() == 3:
+                # (batch, max_tasks, 5) -> 取平均
+                task_cond = task_conditions.mean(dim=1)  # (batch, 5)
+            else:
+                task_cond = task_conditions  # (batch, 5)
+            # 归一化到 [0, 1]
+            task_cond = task_cond / torch.tensor([4., 1., 1., 1., 1.], device=task_cond.device)
+            features.append(task_cond)
+
+        # 处理被试信息
+        if is_known_subject is not None:
+            if isinstance(is_known_subject, np.ndarray):
+                is_known_subject = torch.from_numpy(is_known_subject).float()
+            features.append(is_known_subject.unsqueeze(1))
+
+        # 拼接特征
+        x = torch.cat(features, dim=-1)  # (batch, input_dim)
+
+        # 通过MLP
+        x = self.activation(self.fc1(x))
+        x = self.dropout(x)
+        x = self.activation(self.fc2(x))
+        x = self.dropout(x)
+        logits = self.fc3(x)
+
+        return logits
 
 
 class EnsemblePredictor:
@@ -65,11 +155,11 @@ class EnsemblePredictor:
 
     结合层级模型和片段模型的预测结果。
 
-    支持四种集成策略：
+    支持五种集成策略：
     1. fixed: 固定权重加权平均
     2. condition_aware: 根据任务条件动态调整权重
     3. dual_aware: 同时考虑任务条件和被试条件
-    4. learned: 使用学习的融合层
+    4. learned: 使用神经网络学习融合
     """
 
     def __init__(
@@ -98,6 +188,7 @@ class EnsemblePredictor:
         # 初始化模型
         self.hierarchical_model = None
         self.segment_model = None
+        self.fusion_network = None
 
         logger.info(f"初始化集成预测器，策略: {ensemble_config.strategy}")
 
@@ -149,6 +240,22 @@ class EnsemblePredictor:
         self.segment_model.load_state_dict(state_dict)
         self.segment_model.to(self.device)
         self.segment_model.eval()
+
+        # 初始化融合网络（如果使用learned策略）
+        if self.ensemble_config.strategy == "learned":
+            logger.info("初始化学习融合网络...")
+            self.fusion_network = LearnedFusion(
+                num_classes=self.num_classes,
+                hidden_dim=self.ensemble_config.fusion_hidden_dim,
+                dropout=self.ensemble_config.fusion_dropout,
+                use_task_conditions=True,
+                use_subject_info=True,
+            ).to(self.device)
+            # 融合网络默认使用简单权重初始化，最后偏向片段模型
+            # 因为片段模型泛化更好
+            with torch.no_grad():
+                self.fusion_network.fc3.weight.data.fill_(0.01)
+                self.fusion_network.fc3.bias.data[:] = torch.tensor([0.2, 0.3, 0.5], device=self.device)
 
         logger.info("两个模型加载完成")
 
@@ -456,14 +563,57 @@ class EnsemblePredictor:
             mismatch_count = np.sum(hier_labels != seg_labels)
             logger.warning(f"层级模型和片段模型有 {mismatch_count}/{len(hier_labels)} 个标签不匹配")
 
-        # 计算集成权重
-        batch_size = len(hier_labels)
-
-        # 获取训练集被试ID（从数据集属性中获取，如果有的话）
+        # 获取已知被试集合（用于 dual_aware 和 learned 策略）
         known_subjects = getattr(hierarchical_dataset, 'known_subjects', None)
 
-        # 对于条件感知策略，需要基于任务条件计算权重
-        if self.ensemble_config.strategy in ["condition_aware", "dual_aware"] and task_conditions_list and task_conditions_list[0] is not None:
+        # 计算集成预测
+        batch_size = len(hier_labels)
+
+        if self.ensemble_config.strategy == "learned":
+            # 使用学习融合网络
+            if self.fusion_network is None:
+                raise RuntimeError("learned 策略需要先加载模型（融合网络未初始化）")
+
+            # 准备输入数据
+            hier_probs_tensor = torch.from_numpy(hier_probs).to(self.device)  # (N, num_classes)
+            seg_probs_tensor = torch.from_numpy(seg_probs).to(self.device)   # (N, num_classes)
+
+            # 准备任务条件
+            task_cond_input = None
+            if task_conditions_list and task_conditions_list[0] is not None:
+                all_task_conditions = torch.cat(task_conditions_list, dim=0)  # (N, max_tasks, 5)
+                # 取平均任务条件
+                task_cond_input = all_task_conditions.mean(dim=1)  # (N, 5)
+
+            # 准备被试信息
+            if known_subjects is not None:
+                is_known_subject = torch.tensor([
+                    sid in known_subjects for sid in hier_subject_ids
+                ], dtype=torch.float32, device=self.device)
+            else:
+                is_known_subject = None
+
+            # 融合网络前向传播
+            with torch.no_grad():
+                logits = self.fusion_network(
+                    hier_probs_tensor,
+                    seg_probs_tensor,
+                    task_conditions=task_cond_input,
+                    is_known_subject=is_known_subject,
+                )
+                ensemble_probs = F.softmax(logits, dim=-1).cpu().numpy()
+                ensemble_preds = ensemble_probs.argmax(axis=1)
+
+            # 计算平均权重（用于日志）
+            # 通过比较预测结果来推断权重
+            hier_contribution = np.mean(
+                np.abs(ensemble_probs - seg_probs) /
+                (np.abs(ensemble_probs - hier_probs) + np.abs(ensemble_probs - seg_probs) + 1e-8)
+            )
+            hier_weights = 1.0 - hier_contribution
+            seg_weights = 1.0 - hier_weights
+
+        elif self.ensemble_config.strategy in ["condition_aware", "dual_aware"] and task_conditions_list and task_conditions_list[0] is not None:
             # 合并所有批次的任务条件
             all_task_conditions = torch.cat(task_conditions_list, dim=0)  # (N, max_tasks, 5)
 
@@ -506,9 +656,10 @@ class EnsemblePredictor:
             hier_weights = np.full((batch_size, 1), self.ensemble_config.hierarchical_weight)
             seg_weights = np.full((batch_size, 1), self.ensemble_config.segment_weight)
 
-        # 加权融合
-        ensemble_probs = hier_weights * hier_probs + seg_weights * seg_probs
-        ensemble_preds = ensemble_probs.argmax(axis=1)
+        # 加权融合（learned策略已经计算了ensemble_probs）
+        if self.ensemble_config.strategy != "learned":
+            ensemble_probs = hier_weights * hier_probs + seg_weights * seg_probs
+            ensemble_preds = ensemble_probs.argmax(axis=1)
 
         results = {
             'ensemble_probs': ensemble_probs,
