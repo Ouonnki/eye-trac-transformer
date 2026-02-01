@@ -325,7 +325,7 @@ class EnsemblePredictor:
 
             probs = F.softmax(logits, dim=-1)
             segment_probs.append(probs.cpu().numpy())
-            segment_labels.append(batch['labels'].numpy())
+            segment_labels.append(batch['labels'].numpy().flatten())  # 确保是 1D
             segment_subject_ids.extend(batch['subject_ids'])
 
         segment_probs = np.concatenate(segment_probs, axis=0)
@@ -339,8 +339,8 @@ class EnsemblePredictor:
             mask = [i for i, sid in enumerate(segment_subject_ids) if sid == subject_id]
             # 取该被试所有片段概率的平均
             avg_probs = segment_probs[mask].mean(axis=0)
-            # 标签应该都相同
-            label = segment_labels[mask[0]]
+            # 标签应该都相同，确保是标量
+            label = int(segment_labels[mask[0]])
             subject_results[subject_id] = (avg_probs, label)
 
         return subject_results
