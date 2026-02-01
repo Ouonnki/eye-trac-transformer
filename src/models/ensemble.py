@@ -334,7 +334,7 @@ class EnsemblePredictor:
 
     def predict(
         self,
-        hierarchical_dataset: HierarchicalGazeDataset,
+        hierarchical_dataset: Dataset,
         segment_dataset: SegmentGazeDataset,
         return_individual: bool = False,
     ) -> Dict[str, np.ndarray]:
@@ -417,7 +417,7 @@ class EnsemblePredictor:
 
     def evaluate(
         self,
-        hierarchical_dataset: HierarchicalGazeDataset,
+        hierarchical_dataset: Dataset,
         segment_dataset: SegmentGazeDataset,
     ) -> Dict[str, float]:
         """
