@@ -59,7 +59,7 @@ class LightweightGazeDataset(Dataset):
         fit_normalizer: bool = False,
         normalizer_stats: Optional[Dict] = None,
         task_type: str = 'classification',
-        use_task_embedding: bool = True,
+        use_task_embedding: bool = False,  # 默认关闭
     ):
         """
         初始化
