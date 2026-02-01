@@ -615,7 +615,7 @@ class SegmentTrainer:
             for batch in test_loader:
                 features = batch['features'].to(self.device, non_blocking=True)
                 lengths = batch['length'].to(self.device, non_blocking=True)
-                labels = batch['label']
+                labels = batch['labels']
 
                 outputs = self.model(features, lengths)
                 all_predictions.extend(outputs.cpu().numpy())
