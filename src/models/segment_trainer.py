@@ -142,6 +142,48 @@ class SegmentTrainer:
         )
         return optimizer, scheduler
 
+    def _compute_class_weights(self, dataset) -> torch.Tensor:
+        """
+        计算类别权重（逆频率加权）用于处理类别不平衡
+
+        Args:
+            dataset: 数据集（需要有 labels 属性或可迭代获取标签）
+
+        Returns:
+            类别权重张量
+        """
+        # 收集所有标签
+        if hasattr(dataset, 'labels'):
+            labels = np.array(dataset.labels)
+        elif hasattr(dataset, 'segment_labels'):
+            labels = np.array(dataset.segment_labels)
+        else:
+            # 从数据集中迭代获取
+            labels = []
+            for i in range(len(dataset)):
+                item = dataset[i]
+                if 'labels' in item:
+                    labels.append(item['labels'].item())
+                elif 'label' in item:
+                    labels.append(item['label'].item())
+            labels = np.array(labels)
+
+        # 统计类别分布
+        class_counts = np.bincount(labels, minlength=self.config.task.num_classes)
+
+        # 避免除零
+        class_counts = np.maximum(class_counts, 1)
+
+        # 逆频率加权：样本越少的类别权重越大
+        class_weights = 1.0 / class_counts
+        # 归一化使权重均值为 1，保持损失量级稳定
+        class_weights = class_weights / class_weights.mean()
+
+        logger.info(f'类别分布: {dict(enumerate(class_counts))}')
+        logger.info(f'类别权重: {dict(enumerate(np.round(class_weights, 3)))}')
+
+        return torch.tensor(class_weights, dtype=torch.float32)
+
     def _aggregate_segment_predictions(
         self,
         predictions: np.ndarray,
@@ -387,7 +429,14 @@ class SegmentTrainer:
 
         # 损失函数
         if self.config.task.type == 'classification':
-            criterion = nn.CrossEntropyLoss()
+            # 检查是否启用类别权重
+            use_class_weights = getattr(self.config.task, 'use_class_weights', False)
+            if use_class_weights:
+                class_weights = self._compute_class_weights(train_dataset).to(self.device)
+                criterion = nn.CrossEntropyLoss(weight=class_weights)
+                logger.info('使用加权交叉熵损失函数（类别平衡）')
+            else:
+                criterion = nn.CrossEntropyLoss()
         else:
             criterion = nn.MSELoss()
 
