@@ -462,7 +462,7 @@ class EnsemblePredictor:
 
 def search_optimal_weights(
     predictor: EnsemblePredictor,
-    val_hierarchical_dataset: HierarchicalGazeDataset,
+    val_hierarchical_dataset: Dataset,
     val_segment_dataset: SegmentGazeDataset,
     weight_range: Tuple[float, float] = (0.0, 1.0),
     num_steps: int = 21,
