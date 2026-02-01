@@ -268,6 +268,7 @@ def evaluate_on_split(
     config: UnifiedConfig,
     split_name: str,
     normalizer_stats: Optional[Dict] = None,
+    known_subjects: Optional[set] = None,
 ) -> Dict:
     """
     在特定划分上评估集成模型
@@ -279,6 +280,7 @@ def evaluate_on_split(
         config: 统一配置
         split_name: 划分名称
         normalizer_stats: 归一化统计量
+        known_subjects: 训练集被试ID集合（用于双重感知策略）
 
     Returns:
         评估结果字典
@@ -289,6 +291,10 @@ def evaluate_on_split(
     hier_dataset, seg_dataset = create_datasets(
         split_data, seq_config, config, normalizer_stats
     )
+
+    # 添加已知被试集合（用于双重感知策略）
+    if known_subjects is not None:
+        hier_dataset.known_subjects = known_subjects
 
     logger.info(f'{split_name}: {len(hier_dataset)} 个被试, {len(seg_dataset)} 个片段')
 
@@ -362,6 +368,9 @@ def run_ensemble_experiment(
     )
     normalizer_stats = train_hier_dataset.stats
 
+    # 收集训练集被试ID（用于双重感知策略）
+    known_subjects = {subj['subject_id'] for subj in splits['train']}
+
     # 创建集成配置
     ensemble_config = EnsembleConfig(
         hierarchical_weight_path=hierarchical_weight_path,
@@ -407,7 +416,7 @@ def run_ensemble_experiment(
     for split_name in ['train', 'test1', 'test2', 'test3']:
         split_results = evaluate_on_split(
             predictor, splits[split_name], seq_config, config,
-            split_name, normalizer_stats
+            split_name, normalizer_stats, known_subjects
         )
         results['splits'][split_name] = split_results
 
@@ -474,7 +483,7 @@ def compare_strategies(
     Returns:
         比较结果
     """
-    strategies = ["fixed", "condition_aware"]
+    strategies = ["fixed", "condition_aware", "dual_aware"]
     all_results = {}
 
     for strategy in strategies:
@@ -528,7 +537,7 @@ def main():
     parser.add_argument('--output', type=str, default='outputs/ensemble',
                        help='输出目录')
     parser.add_argument('--strategy', type=str, default='condition_aware',
-                       choices=['fixed', 'condition_aware', 'compare'],
+                       choices=['fixed', 'condition_aware', 'dual_aware', 'compare'],
                        help='集成策略（compare 表示比较所有策略）')
 
     args = parser.parse_args()

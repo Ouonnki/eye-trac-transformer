@@ -38,7 +38,7 @@ class EnsembleConfig:
     segment_weight_path: str = ""
 
     # 集成策略
-    strategy: str = "condition_aware"  # "fixed", "condition_aware", "learned"
+    strategy: str = "condition_aware"  # "fixed", "condition_aware", "dual_aware", "learned"
 
     # 固定权重模式参数
     hierarchical_weight: float = 0.5
@@ -49,6 +49,10 @@ class EnsembleConfig:
     new_task_hier_weight: float = 0.1    # 新任务时层级模型权重
     max_known_grid_size: int = 25        # 训练时见过的最大 grid_size
     max_known_distractor: int = 8        # 训练时见过的最大 distractor_count
+
+    # 双重感知模式参数（同时考虑任务和被试）
+    new_subject_new_task_hier_weight: float = 0.0  # 新被试+新任务时层级权重（纯片段模型）
+    known_subject_new_task_hier_weight: float = 0.1  # 已知被试+新任务时层级权重
 
     # 推理参数
     batch_size: int = 8
@@ -61,10 +65,11 @@ class EnsemblePredictor:
 
     结合层级模型和片段模型的预测结果。
 
-    支持三种集成策略：
+    支持四种集成策略：
     1. fixed: 固定权重加权平均
     2. condition_aware: 根据任务条件动态调整权重
-    3. learned: 使用学习的融合层
+    3. dual_aware: 同时考虑任务条件和被试条件
+    4. learned: 使用学习的融合层
     """
 
     def __init__(
@@ -176,14 +181,18 @@ class EnsemblePredictor:
     def get_dynamic_weights(
         self,
         task_conditions: Optional[torch.Tensor],
+        subject_ids: Optional[List[str]],
         batch_size: int,
+        known_subjects: Optional[set] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        根据任务条件计算动态权重
+        根据任务条件和被试条件计算动态权重
 
         Args:
             task_conditions: 任务条件张量
+            subject_ids: 被试ID列表
             batch_size: 批次大小
+            known_subjects: 已知被试ID集合
 
         Returns:
             (hier_weights, seg_weights): 两个 (batch, 1) 权重张量
@@ -198,7 +207,7 @@ class EnsemblePredictor:
                               device=self.device)
 
         elif strategy == "condition_aware":
-            # 条件感知权重
+            # 条件感知权重（只考虑任务）
             if task_conditions is None:
                 # 没有任务条件信息，使用新任务的保守权重
                 hier_w = torch.full((batch_size, 1), self.ensemble_config.new_task_hier_weight,
@@ -212,6 +221,44 @@ class EnsemblePredictor:
                     torch.full((batch_size, 1), self.ensemble_config.new_task_hier_weight,
                               device=self.device),
                 )
+            seg_w = 1.0 - hier_w
+
+        elif strategy == "dual_aware":
+            # 双重感知权重（同时考虑任务和被试）
+            if task_conditions is None or subject_ids is None or known_subjects is None:
+                # 信息不足，使用默认权重
+                hier_w = torch.full((batch_size, 1), self.ensemble_config.new_task_hier_weight,
+                                   device=self.device)
+            else:
+                # 判断任务是否已知
+                is_known_task = self.is_known_task_condition(task_conditions)  # (batch,)
+
+                # 判断被试是否已知
+                is_known_subject = torch.tensor([
+                    sid in known_subjects for sid in subject_ids
+                ], dtype=torch.bool, device=self.device)  # (batch,)
+
+                # 四种情况：
+                # 1. 已知被试 + 已知任务: 高层级权重
+                # 2. 已知被试 + 新任务: 低层级权重
+                # 3. 新被试 + 已知任务: 中等层级权重（层级模型擅长已知任务）
+                # 4. 新被试 + 新任务: 零层级权重（纯片段模型）
+                hier_w_values = torch.zeros(batch_size, 1, device=self.device)
+                for i in range(batch_size):
+                    if is_known_subject[i] and is_known_task[i]:
+                        # 已知被试 + 已知任务
+                        hier_w_values[i] = self.ensemble_config.known_task_hier_weight
+                    elif is_known_subject[i] and not is_known_task[i]:
+                        # 已知被试 + 新任务
+                        hier_w_values[i] = self.ensemble_config.known_subject_new_task_hier_weight
+                    elif not is_known_subject[i] and is_known_task[i]:
+                        # 新被试 + 已知任务
+                        hier_w_values[i] = self.ensemble_config.known_task_hier_weight
+                    else:
+                        # 新被试 + 新任务：纯片段模型
+                        hier_w_values[i] = self.ensemble_config.new_subject_new_task_hier_weight
+
+                hier_w = hier_w_values
             seg_w = 1.0 - hier_w
 
         else:
@@ -412,21 +459,48 @@ class EnsemblePredictor:
         # 计算集成权重
         batch_size = len(hier_labels)
 
+        # 获取训练集被试ID（从数据集属性中获取，如果有的话）
+        known_subjects = getattr(hierarchical_dataset, 'known_subjects', None)
+
         # 对于条件感知策略，需要基于任务条件计算权重
-        if self.ensemble_config.strategy == "condition_aware" and task_conditions_list and task_conditions_list[0] is not None:
-            # 逐样本计算权重
-            all_hier_weights = []
-            for tc in task_conditions_list:
-                if tc is not None:
-                    is_known = self.is_known_task_condition(tc)
-                    weights = torch.where(
-                        is_known,
-                        torch.tensor(self.ensemble_config.known_task_hier_weight),
-                        torch.tensor(self.ensemble_config.new_task_hier_weight),
-                    )
-                    all_hier_weights.append(weights.cpu().numpy())
-            hier_weights = np.concatenate(all_hier_weights)[:, None]  # (N, 1)
-            seg_weights = 1.0 - hier_weights
+        if self.ensemble_config.strategy in ["condition_aware", "dual_aware"] and task_conditions_list and task_conditions_list[0] is not None:
+            # 合并所有批次的任务条件
+            all_task_conditions = torch.cat(task_conditions_list, dim=0)  # (N, max_tasks, 5)
+
+            if self.ensemble_config.strategy == "dual_aware" and known_subjects is not None:
+                # 双重感知策略：同时考虑任务和被试
+                is_known_task = self.is_known_task_condition(all_task_conditions)  # (N,)
+                is_known_subject = torch.tensor([
+                    sid in known_subjects for sid in hier_subject_ids
+                ], dtype=torch.bool)
+
+                # 计算权重
+                hier_weights_list = []
+                for i in range(batch_size):
+                    if is_known_subject[i] and is_known_task[i]:
+                        # 已知被试 + 已知任务
+                        hier_weights_list.append(self.ensemble_config.known_task_hier_weight)
+                    elif is_known_subject[i] and not is_known_task[i]:
+                        # 已知被试 + 新任务
+                        hier_weights_list.append(self.ensemble_config.known_subject_new_task_hier_weight)
+                    elif not is_known_subject[i] and is_known_task[i]:
+                        # 新被试 + 已知任务
+                        hier_weights_list.append(self.ensemble_config.known_task_hier_weight)
+                    else:
+                        # 新被试 + 新任务：纯片段模型
+                        hier_weights_list.append(self.ensemble_config.new_subject_new_task_hier_weight)
+
+                hier_weights = np.array(hier_weights_list)[:, None]
+                seg_weights = 1.0 - hier_weights
+            else:
+                # 条件感知策略：只考虑任务
+                is_known = self.is_known_task_condition(all_task_conditions)  # (N,)
+                hier_weights = np.where(
+                    is_known.cpu().numpy(),
+                    self.ensemble_config.known_task_hier_weight,
+                    self.ensemble_config.new_task_hier_weight,
+                )[:, None]
+                seg_weights = 1.0 - hier_weights
         else:
             # 使用固定权重
             hier_weights = np.full((batch_size, 1), self.ensemble_config.hierarchical_weight)
