@@ -16,6 +16,7 @@ import logging
 import json
 import pickle
 import argparse
+import copy
 from datetime import datetime
 from typing import List, Dict, Optional
 from pathlib import Path
@@ -239,9 +240,12 @@ def create_datasets(
     Returns:
         (hierarchical_dataset, segment_dataset)
     """
+    # 使用深拷贝避免 LightweightGazeDataset 就地归一化修改原始数据
+    data_copy = copy.deepcopy(data)
+
     # 使用 LightweightGazeDataset 作为层级数据集
     hierarchical_dataset = LightweightGazeDataset(
-        data, seq_config,
+        data_copy, seq_config,
         normalizer_stats=normalizer_stats,
         task_type=config.task.type,
         use_task_embedding=getattr(config.model, 'use_task_embedding', False),
@@ -347,9 +351,10 @@ def run_ensemble_experiment(
     # 执行划分
     splits = splitter.split(data)
 
-    # 获取训练集归一化统计量
+    # 获取训练集归一化统计量（使用深拷贝避免修改原始数据）
+    train_data_copy = copy.deepcopy(splits['train'])
     train_hier_dataset = LightweightGazeDataset(
-        splits['train'], seq_config, fit_normalizer=True,
+        train_data_copy, seq_config, fit_normalizer=True,
         task_type=config.task.type,
         use_task_embedding=config.model.use_task_embedding,
     )
