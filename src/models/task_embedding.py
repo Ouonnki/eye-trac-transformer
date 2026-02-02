@@ -87,18 +87,21 @@ class TaskEmbedding(nn.Module):
         self,
         d_model: int,
         embedding_dim: int = 16,  # 每个离散嵌入的维度
+        output_dim: int = None,  # 输出维度，None时等于d_model
     ):
         """
         初始化
 
         Args:
-            d_model: 输出维度（与Transformer的d_model一致）
+            d_model: 内部处理维度
             embedding_dim: 每个离散嵌入的基础维度
+            output_dim: 输出维度，None时等于d_model（可设置更小的值降低信号强度）
         """
         super().__init__()
 
         self.d_model = d_model
         self.embedding_dim = embedding_dim
+        self.output_dim = output_dim if output_dim is not None else d_model
 
         # 连续嵌入：可学习的基础向量，与 grid_scale 相乘
         self.grid_base_emb = nn.Parameter(torch.randn(d_model))
@@ -118,6 +121,12 @@ class TaskEmbedding(nn.Module):
 
         # 融合后的投影
         self.fusion_proj = nn.Linear(d_model * 2, d_model)
+
+        # 输出投影（如果输出维度不同于 d_model）
+        if self.output_dim != d_model:
+            self.output_proj = nn.Linear(d_model, self.output_dim)
+        else:
+            self.output_proj = nn.Identity()
 
         self._init_weights()
 
@@ -146,7 +155,7 @@ class TaskEmbedding(nn.Module):
             has_task_distractor: 任务干扰 (batch,)
 
         Returns:
-            task_emb: (batch, d_model) 任务嵌入向量
+            task_emb: (batch, output_dim) 任务嵌入向量
         """
         device = grid_scale.device
 
@@ -169,5 +178,8 @@ class TaskEmbedding(nn.Module):
         # 3. 融合连续和离散嵌入
         combined = torch.cat([grid_emb, discrete_emb], dim=1)  # (batch, d_model * 2)
         task_emb = self.fusion_proj(combined)  # (batch, d_model)
+
+        # 4. 输出投影（调整到目标维度）
+        task_emb = self.output_proj(task_emb)  # (batch, output_dim)
 
         return task_emb

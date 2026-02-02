@@ -40,6 +40,7 @@ class ModelConfig:
     # 任务嵌入配置
     use_task_embedding: bool = False
     task_embedding_dim: int = 16
+    task_embedding_output_dim: int = 16  # 任务嵌入输出维度，可设置小于d_model以降低信号强度
 
     # 任务级编码器配置
     use_task_encoder: bool = True
