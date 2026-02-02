@@ -28,19 +28,19 @@ class ExperimentConfig:
 class ModelConfig:
     """模型架构配置"""
     input_dim: int = 7
-    segment_d_model: int = 64
-    segment_nhead: int = 4
+    segment_d_model: int = 128  # 64 → 128 (序列+任务 concat 后的维度)
+    segment_nhead: int = 8     # 4 → 8 (d_model/8)
     segment_num_layers: int = 4
-    task_d_model: int = 128
-    task_nhead: int = 4
+    task_d_model: int = 256     # 128 → 256 (segment_d_model * 2)
+    task_nhead: int = 8         # 4 → 8
     task_num_layers: int = 2
-    attention_dim: int = 32
+    attention_dim: int = 64     # 32 → 64
     dropout: float = 0.1
 
     # 任务嵌入配置
     use_task_embedding: bool = False
     task_embedding_dim: int = 16
-    task_embedding_output_dim: int = 16  # 任务嵌入输出维度，可设置小于d_model以降低信号强度
+    # 任务嵌入输出维度固定为 segment_d_model，不再可配置
 
     # 任务级编码器配置
     use_task_encoder: bool = True

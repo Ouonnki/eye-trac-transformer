@@ -70,7 +70,6 @@ class SegmentEncoder(nn.Module):
         # 片段编码器（复用现有的 GazeTransformerEncoder）
         # 获取任务嵌入配置
         task_emb_dim = getattr(model_config, 'task_embedding_dim', 16)
-        task_emb_output_dim = getattr(model_config, 'task_embedding_output_dim', None)
 
         self.segment_encoder = GazeTransformerEncoder(
             input_dim=model_config.input_dim,
@@ -83,7 +82,6 @@ class SegmentEncoder(nn.Module):
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_task_embedding=use_task_embedding,
             task_embedding_dim=task_emb_dim,
-            task_embedding_output_dim=task_emb_output_dim,
         )
 
         # 预测头

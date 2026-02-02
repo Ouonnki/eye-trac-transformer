@@ -42,7 +42,6 @@ class GazeTransformerEncoder(nn.Module):
         use_gradient_checkpointing: bool = False,
         use_task_embedding: bool = False,
         task_embedding_dim: int = 16,
-        task_embedding_output_dim: int = None,
     ):
         """
         初始化
@@ -58,7 +57,6 @@ class GazeTransformerEncoder(nn.Module):
             use_gradient_checkpointing: 是否使用梯度检查点节省显存
             use_task_embedding: 是否使用任务嵌入
             task_embedding_dim: 任务嵌入基础维度
-            task_embedding_output_dim: 任务嵌入输出维度，None时等于d_model
         """
         super().__init__()
 
@@ -68,9 +66,6 @@ class GazeTransformerEncoder(nn.Module):
         # 输入投影
         self.input_proj = nn.Linear(input_dim, d_model)
 
-        # 位置编码
-        self.pos_encoder = PositionalEncoding(d_model, max_len=max_seq_len + 1, dropout=dropout)
-
         # [CLS] token
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
 
@@ -78,22 +73,25 @@ class GazeTransformerEncoder(nn.Module):
         self.use_task_embedding = use_task_embedding
         if use_task_embedding:
             from src.models.task_embedding import TaskEmbedding
+            # 任务嵌入输出维度 = d_model，与序列 concat 后变为 d_model * 2
             self.task_embedding = TaskEmbedding(
                 d_model=d_model,
                 embedding_dim=task_embedding_dim,
-                output_dim=task_embedding_output_dim,
             )
-            # 如果任务嵌入输出维度与 d_model 不同，需要投影
-            task_emb_out_dim = task_embedding_output_dim if task_embedding_output_dim is not None else d_model
-            if task_emb_out_dim != d_model:
-                self.task_emb_proj = nn.Linear(task_emb_out_dim, d_model)
-            else:
-                self.task_emb_proj = nn.Identity()
+            # 使用任务嵌入时，实际处理维度为 d_model * 2
+            actual_d_model = d_model * 2
+        else:
+            actual_d_model = d_model
+
+        # 位置编码（根据是否使用任务嵌入调整维度）
+        self.pos_encoder = PositionalEncoding(actual_d_model, max_len=max_seq_len + 1, dropout=dropout)
 
         # Transformer 编码器层（分开存储以支持梯度检查点）
+        # 根据是否使用任务嵌入确定实际维度
+        encoder_d_model = actual_d_model
         self.encoder_layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
-                d_model=d_model,
+                d_model=encoder_d_model,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
@@ -104,7 +102,7 @@ class GazeTransformerEncoder(nn.Module):
         ])
 
         # LayerNorm
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = nn.LayerNorm(encoder_d_model)
 
     def forward(
         self,
@@ -147,13 +145,13 @@ class GazeTransformerEncoder(nn.Module):
                 click_disappear=task_conditions[:, 2],
                 has_distractor=task_conditions[:, 3],
                 has_task_distractor=task_conditions[:, 4],
-            )  # (batch, output_dim)
-
-            # 投影到 d_model（如果需要）
-            task_emb = self.task_emb_proj(task_emb)  # (batch, d_model)
+            )  # (batch, d_model)
 
             # 广播到所有位置（包括 [CLS] token）
-            x = x + task_emb.unsqueeze(1)  # (batch, seq_len+1, d_model)
+            task_emb = task_emb.unsqueeze(1).expand(-1, x.size(1), -1)  # (batch, seq_len+1, d_model)
+
+            # 特征维度拼接：序列(64) + 任务(64) = 128
+            x = torch.cat([x, task_emb], dim=-1)  # (batch, seq_len+1, d_model*2)
 
         # 位置编码
         x = self.pos_encoder(x)
@@ -292,7 +290,6 @@ class HierarchicalEncoder(nn.Module):
         use_gradient_checkpointing: bool = False,
         use_task_embedding: bool = False,
         task_embedding_dim: int = 16,
-        task_embedding_output_dim: int = None,
         use_task_encoder: bool = True,
     ):
         """
@@ -304,7 +301,6 @@ class HierarchicalEncoder(nn.Module):
             use_gradient_checkpointing: 是否使用梯度检查点
             use_task_embedding: 是否使用任务嵌入
             task_embedding_dim: 任务嵌入基础维度
-            task_embedding_output_dim: 任务嵌入输出维度
             use_task_encoder: 是否使用任务级编码器（False时直接池化任务表示）
         """
         super().__init__()
@@ -325,7 +321,6 @@ class HierarchicalEncoder(nn.Module):
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_task_embedding=use_task_embedding,
             task_embedding_dim=task_embedding_dim,
-            task_embedding_output_dim=task_embedding_output_dim,
         )
 
         # 任务聚合器（从片段到任务）

@@ -9,15 +9,16 @@
   },
   "model": {
     "input_dim": 7,
-    "segment_d_model": 64,
-    "segment_nhead": 4,
+    "segment_d_model": 128,
+    "segment_nhead": 8,
     "segment_num_layers": 4,
-    "task_d_model": 128,
-    "task_nhead": 4,
+    "task_d_model": 256,
+    "task_nhead": 8,
     "task_num_layers": 2,
-    "attention_dim": 32,
+    "attention_dim": 64,
     "dropout": 0.1,
     "use_task_embedding": true,
+    "use_task_encoder": true,
     "task_embedding_dim": 16
   },
   "training": {

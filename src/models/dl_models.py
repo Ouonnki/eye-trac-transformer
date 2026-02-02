@@ -64,7 +64,6 @@ class HierarchicalTransformerNetwork(BaseModel):
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
             use_task_embedding=model_config.use_task_embedding,
             task_embedding_dim=model_config.task_embedding_dim,
-            task_embedding_output_dim=model_config.task_embedding_output_dim,
             use_task_encoder=model_config.use_task_encoder,
         )
 
