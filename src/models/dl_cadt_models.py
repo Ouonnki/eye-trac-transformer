@@ -157,13 +157,21 @@ class CADTTransformerModel(BaseModel):
         super().__init__()
 
         self.num_classes = num_classes
-        self.feature_dim = model_config.task_d_model
+
+        # 特征维度取决于是否使用任务编码器
+        if model_config.use_task_encoder:
+            self.feature_dim = model_config.task_d_model
+        else:
+            self.feature_dim = model_config.segment_d_model
 
         # 特征编码器（复用层级编码器）
         self.encoder = HierarchicalEncoder(
             model_config=model_config,
             seq_config=seq_config,
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
+            use_task_embedding=model_config.use_task_embedding,
+            task_embedding_dim=model_config.task_embedding_dim,
+            use_task_encoder=model_config.use_task_encoder,
         )
 
         # 分类器

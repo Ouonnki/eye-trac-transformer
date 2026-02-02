@@ -266,7 +266,7 @@ class HierarchicalEncoder(nn.Module):
     结构：
     1. GazeTransformerEncoder: 片段 → 片段表示
     2. AttentionPooling: 片段 → 任务表示
-    3. TaskTransformerEncoder: 任务序列 → 编码任务
+    3. [可选] TaskTransformerEncoder: 任务序列 → 编码任务
     4. AttentionPooling: 任务 → 被试表示
     """
 
@@ -277,6 +277,7 @@ class HierarchicalEncoder(nn.Module):
         use_gradient_checkpointing: bool = False,
         use_task_embedding: bool = False,
         task_embedding_dim: int = 16,
+        use_task_encoder: bool = True,
     ):
         """
         初始化
@@ -287,11 +288,13 @@ class HierarchicalEncoder(nn.Module):
             use_gradient_checkpointing: 是否使用梯度检查点
             use_task_embedding: 是否使用任务嵌入
             task_embedding_dim: 任务嵌入维度
+            use_task_encoder: 是否使用任务级编码器（False时直接池化任务表示）
         """
         super().__init__()
 
         self.max_tasks = seq_config.max_tasks
         self.max_segments = seq_config.max_segments
+        self.use_task_encoder = use_task_encoder
 
         # 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
@@ -314,20 +317,26 @@ class HierarchicalEncoder(nn.Module):
             dropout=model_config.dropout,
         )
 
-        # 任务序列编码器
-        self.task_encoder = TaskTransformerEncoder(
-            input_dim=model_config.segment_d_model,
-            d_model=model_config.task_d_model,
-            nhead=model_config.task_nhead,
-            num_layers=model_config.task_num_layers,
-            dim_feedforward=model_config.task_d_model * 4,
-            dropout=model_config.dropout,
-            max_tasks=seq_config.max_tasks,
-        )
+        # 任务序列编码器（可选）
+        if use_task_encoder:
+            self.task_encoder = TaskTransformerEncoder(
+                input_dim=model_config.segment_d_model,
+                d_model=model_config.task_d_model,
+                nhead=model_config.task_nhead,
+                num_layers=model_config.task_num_layers,
+                dim_feedforward=model_config.task_d_model * 4,
+                dropout=model_config.dropout,
+                max_tasks=seq_config.max_tasks,
+            )
+            aggregator_input_dim = model_config.task_d_model
+        else:
+            self.task_encoder = None
+            # 不使用任务编码器时，直接使用 segment_d_model
+            aggregator_input_dim = model_config.segment_d_model
 
         # 被试聚合器（从任务到被试）
         self.subject_aggregator = AttentionPooling(
-            input_dim=model_config.task_d_model,
+            input_dim=aggregator_input_dim,
             attention_dim=model_config.attention_dim,
             dropout=model_config.dropout,
         )
@@ -400,12 +409,16 @@ class HierarchicalEncoder(nn.Module):
         task_reprs = task_reprs_flat.view(batch_size, self.max_tasks, -1)
         segment_attentions = segment_attns_flat.view(batch_size, self.max_tasks, self.max_segments)
 
-        # 3. 编码任务序列
-        task_encoded = self.task_encoder(task_reprs, task_mask)  # (batch, tasks, task_d_model)
+        # 3. 编码任务序列（可选）
+        if self.use_task_encoder and self.task_encoder is not None:
+            task_encoded = self.task_encoder(task_reprs, task_mask)  # (batch, tasks, task_d_model)
+        else:
+            # 不使用任务编码器，直接使用任务表示
+            task_encoded = task_reprs  # (batch, tasks, segment_d_model)
 
         # 4. 聚合任务到被试
         subject_repr, task_attention = self.subject_aggregator(task_encoded, task_mask)
-        # subject_repr: (batch, task_d_model)
+        # subject_repr: (batch, task_d_model 或 segment_d_model)
         # task_attention: (batch, tasks)
 
         extras = {

@@ -41,6 +41,9 @@ class ModelConfig:
     use_task_embedding: bool = False
     task_embedding_dim: int = 16
 
+    # 任务级编码器配置
+    use_task_encoder: bool = True
+
 
 @dataclass
 class TrainingConfig:

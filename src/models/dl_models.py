@@ -64,13 +64,19 @@ class HierarchicalTransformerNetwork(BaseModel):
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
             use_task_embedding=model_config.use_task_embedding,
             task_embedding_dim=model_config.task_embedding_dim,
+            use_task_encoder=model_config.use_task_encoder,
         )
 
-        # 预测头
+        # 预测头：输入维度取决于是否使用任务编码器
+        if model_config.use_task_encoder:
+            head_input_dim = model_config.task_d_model
+        else:
+            head_input_dim = model_config.segment_d_model
+
         output_dim = num_classes if num_classes > 1 else 1
         self.prediction_head = PredictionHead(
-            input_dim=model_config.task_d_model,
-            hidden_dim=model_config.task_d_model // 2,
+            input_dim=head_input_dim,
+            hidden_dim=head_input_dim // 2,
             output_dim=output_dim,
             dropout=model_config.dropout,
         )
