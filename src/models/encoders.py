@@ -308,6 +308,7 @@ class HierarchicalEncoder(nn.Module):
         self.max_tasks = seq_config.max_tasks
         self.max_segments = seq_config.max_segments
         self.use_task_encoder = use_task_encoder
+        self.use_task_embedding = use_task_embedding
 
         # 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
@@ -323,9 +324,16 @@ class HierarchicalEncoder(nn.Module):
             task_embedding_dim=task_embedding_dim,
         )
 
+        # 计算片段编码器的实际输出维度
+        # 使用任务嵌入 concat 时，输出为 segment_d_model * 2
+        if use_task_embedding:
+            actual_segment_d_model = model_config.segment_d_model * 2
+        else:
+            actual_segment_d_model = model_config.segment_d_model
+
         # 任务聚合器（从片段到任务）
         self.task_aggregator = AttentionPooling(
-            input_dim=model_config.segment_d_model,
+            input_dim=actual_segment_d_model,
             attention_dim=model_config.attention_dim,
             dropout=model_config.dropout,
         )
@@ -333,7 +341,7 @@ class HierarchicalEncoder(nn.Module):
         # 任务序列编码器（可选）
         if use_task_encoder:
             self.task_encoder = TaskTransformerEncoder(
-                input_dim=model_config.segment_d_model,
+                input_dim=actual_segment_d_model,
                 d_model=model_config.task_d_model,
                 nhead=model_config.task_nhead,
                 num_layers=model_config.task_num_layers,
@@ -344,8 +352,8 @@ class HierarchicalEncoder(nn.Module):
             aggregator_input_dim = model_config.task_d_model
         else:
             self.task_encoder = None
-            # 不使用任务编码器时，直接使用 segment_d_model
-            aggregator_input_dim = model_config.segment_d_model
+            # 不使用任务编码器时，直接使用片段编码器的实际输出维度
+            aggregator_input_dim = actual_segment_d_model
 
         # 被试聚合器（从任务到被试）
         self.subject_aggregator = AttentionPooling(

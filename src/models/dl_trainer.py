@@ -811,12 +811,14 @@ class DeepLearningTrainer:
                 task_mask = batch['task_mask'].to(self.device)
                 segment_lengths = batch['segment_lengths'].to(self.device)
                 labels = batch['label']
+                task_conditions = batch['task_conditions'].to(self.device) if 'task_conditions' in batch else None
 
                 outputs = self.model(
                     segments=segments,
                     segment_mask=segment_mask,
                     task_mask=task_mask,
                     segment_lengths=segment_lengths,
+                    task_conditions=task_conditions,
                 )
 
                 all_predictions.extend(outputs['prediction'].cpu().numpy())

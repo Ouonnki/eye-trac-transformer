@@ -84,10 +84,17 @@ class SegmentEncoder(nn.Module):
             task_embedding_dim=task_emb_dim,
         )
 
+        # 计算编码器的实际输出维度
+        # 使用任务嵌入 concat 时，输出为 d_model * 2
+        if use_task_embedding:
+            actual_d_model = d_model * 2
+        else:
+            actual_d_model = d_model
+
         # 预测头
         self.prediction_head = PredictionHead(
-            input_dim=d_model,
-            hidden_dim=d_model // 2,
+            input_dim=actual_d_model,
+            hidden_dim=actual_d_model // 2,
             output_dim=num_classes,
             dropout=dropout,
         )

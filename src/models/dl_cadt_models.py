@@ -158,11 +158,15 @@ class CADTTransformerModel(BaseModel):
 
         self.num_classes = num_classes
 
-        # 特征维度取决于是否使用任务编码器
+        # 特征维度取决于是否使用任务编码器和任务嵌入
         if model_config.use_task_encoder:
             self.feature_dim = model_config.task_d_model
         else:
-            self.feature_dim = model_config.segment_d_model
+            # 使用任务嵌入 concat 时，片段输出维度为 segment_d_model * 2
+            if model_config.use_task_embedding:
+                self.feature_dim = model_config.segment_d_model * 2
+            else:
+                self.feature_dim = model_config.segment_d_model
 
         # 特征编码器（复用层级编码器）
         self.encoder = HierarchicalEncoder(
