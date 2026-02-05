@@ -69,7 +69,7 @@ class SegmentEncoder(nn.Module):
 
         # 片段编码器（不在编码器内注入任务嵌入）
         self.segment_encoder = GazeTransformerEncoder(
-            input_dim=model_config.input_dim,
+            input_dim=seq_config.input_dim,
             d_model=d_model,
             nhead=nhead,
             num_layers=num_layers,

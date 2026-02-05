@@ -8,17 +8,16 @@
     "output_dir": "outputs/hi_task_emb_new"
   },
   "model": {
-    "input_dim": 12,
     "segment_d_model": 96,
     "segment_nhead": 4,
     "segment_num_layers": 3,
     "task_d_model": 192,
     "task_nhead": 4,
-    "task_num_layers": 1,
+    "task_num_layers": 2,
     "attention_dim": 48,
     "dropout": 0.25,
-    "use_task_embedding": false,
-    "task_embedding_dim": 2
+    "use_task_embedding": true,
+    "task_embedding_dim": 4
   },
   "training": {
     "batch_size": 8,

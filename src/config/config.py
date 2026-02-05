@@ -27,7 +27,6 @@ class ExperimentConfig:
 @dataclass
 class ModelConfig:
     """模型架构配置"""
-    input_dim: int = 7
     segment_d_model: int = 128  # 64 → 128 (序列+任务 concat 后的维度)
     segment_nhead: int = 8     # 4 → 8 (d_model/8)
     segment_num_layers: int = 4

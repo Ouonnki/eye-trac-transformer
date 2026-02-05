@@ -265,7 +265,7 @@ class HierarchicalEncoder(nn.Module):
 
         # 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
-            input_dim=model_config.input_dim,
+            input_dim=seq_config.input_dim,
             d_model=model_config.segment_d_model,
             nhead=model_config.segment_nhead,
             num_layers=model_config.segment_num_layers,
