@@ -19,6 +19,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, accuracy_score, f1_score
 from tqdm import tqdm
+from colorama import init, Fore, Style
+
+# 初始化 colorama（Windows 兼容）
+init(autoreset=True)
 
 # matplotlib 可选导入（用于训练曲线绘制）
 try:
@@ -407,6 +411,33 @@ class DeepLearningTrainer:
         logger.info(f'训练曲线已保存: {save_path}')
         return save_path
 
+    def _format_metric_change(self, current: float, initial: float, higher_is_better: bool = False) -> str:
+        """
+        格式化指标变化（带颜色和箭头）
+
+        Args:
+            current: 当前值
+            initial: 初始值
+            higher_is_better: 越大是否越好
+
+        Returns:
+            格式化的变化字符串
+        """
+        if initial == 0:
+            change_pct = 0.0
+        else:
+            change_pct = ((current - initial) / abs(initial)) * 100
+
+        if higher_is_better:
+            arrow = Fore.GREEN + '↑' if change_pct > 0 else Fore.RED + '↓'
+            color = Fore.GREEN if change_pct > 0 else Fore.RED
+        else:
+            arrow = Fore.GREEN + '↓' if change_pct < 0 else Fore.RED + '↑'
+            color = Fore.GREEN if change_pct < 0 else Fore.RED
+
+        change_str = f"{color}{arrow} {abs(change_pct):.1f}%{Style.RESET_ALL}"
+        return change_str
+
     def _print_epoch_summary(
         self,
         epoch: int,
@@ -417,7 +448,7 @@ class DeepLearningTrainer:
         best_epoch: int,
     ) -> None:
         """
-        打印阶段性汇总
+        打印阶段性汇总（美化的表格格式）
 
         Args:
             epoch: 当前 epoch
@@ -429,37 +460,68 @@ class DeepLearningTrainer:
         """
         current_train_loss = self.history['train_loss'][-1]
         current_val_loss = self.history['val_loss'][-1]
+        current_lr = self.history['learning_rate'][-1]
 
-        train_change = ((current_train_loss - initial_train_loss) / initial_train_loss) * 100
-        val_change = ((current_val_loss - initial_val_loss) / initial_val_loss) * 100
+        # 打印表头
+        print(f'\n{Fore.CYAN}{'═' * 70}{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}║{Style.RESET_ALL}  {Fore.YELLOW}Epoch {epoch:3d} 训练汇总{Style.RESET_ALL}  '
+              f'{Fore.CYAN}║{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}{'═' * 70}{Style.RESET_ALL}')
 
-        train_arrow = '↓' if train_change < 0 else '↑'
-        val_arrow = '↓' if val_change < 0 else '↑'
+        # 训练损失
+        train_change = self._format_metric_change(current_train_loss, initial_train_loss, higher_is_better=False)
+        print(f'  训练损失: {initial_train_loss:.4f} → {current_train_loss:.4f} ({train_change})')
 
-        print('\n' + '╔' + '═' * 60 + '╗')
-        print(f'║  Epoch {epoch} 阶段汇总' + ' ' * (60 - 15 - len(str(epoch))) + '║')
-        print('╠' + '═' * 60 + '╣')
-        print(f'║  Train Loss: {initial_train_loss:.4f} → {current_train_loss:.4f} ({train_arrow}{abs(train_change):.1f}%)' +
-              ' ' * (60 - 45 - len(f'{abs(train_change):.1f}')) + '║')
-        print(f'║  Val Loss:   {initial_val_loss:.4f} → {current_val_loss:.4f} ({val_arrow}{abs(val_change):.1f}%)' +
-              ' ' * (60 - 45 - len(f'{abs(val_change):.1f}')) + '║')
+        # 验证损失
+        val_change = self._format_metric_change(current_val_loss, initial_val_loss, higher_is_better=False)
+        print(f'  验证损失: {initial_val_loss:.4f} → {current_val_loss:.4f} ({val_change})')
 
+        # 任务指标
         if self.config.task.type == 'classification':
             current_val_acc = self.history['val_accuracy'][-1]
-            acc_change = ((current_val_acc - initial_val_metric) / abs(initial_val_metric + 1e-8)) * 100
-            acc_arrow = '↑' if acc_change > 0 else '↓'
-            print(f'║  Val Acc:    {initial_val_metric:.4f} → {current_val_acc:.4f} ({acc_arrow}{abs(acc_change):.1f}%)' +
-                  ' ' * (60 - 45 - len(f'{abs(acc_change):.1f}')) + '║')
+            acc_change = self._format_metric_change(current_val_acc, initial_val_metric, higher_is_better=True)
+            print(f'  验证精度: {initial_val_metric:.4f} → {current_val_acc:.4f} ({acc_change})')
+
+            current_val_f1 = self.history['val_f1'][-1]
+            print(f'  F1 分数:  {Fore.CYAN}{current_val_f1:.4f}{Style.RESET_ALL}')
         else:
             current_val_r2 = self.history['val_r2'][-1]
-            r2_change = ((current_val_r2 - initial_val_metric) / abs(initial_val_metric + 1e-8)) * 100
-            r2_arrow = '↑' if r2_change > 0 else '↓'
-            print(f'║  Val R2:     {initial_val_metric:.4f} → {current_val_r2:.4f} ({r2_arrow}{abs(r2_change):.1f}%)' +
-                  ' ' * (60 - 45 - len(f'{abs(r2_change):.1f}')) + '║')
+            r2_change = self._format_metric_change(current_val_r2, initial_val_metric, higher_is_better=True)
+            print(f'  验证 R²:  {initial_val_metric:.4f} → {current_val_r2:.4f} ({r2_change})')
 
-        print(f'║  Best Val Loss: {best_val_loss:.4f} @ Epoch {best_epoch}' +
-              ' ' * (60 - 35 - len(str(best_epoch))) + '║')
-        print('╚' + '═' * 60 + '╝\n')
+            current_val_mae = self.history['val_mae'][-1]
+            print(f'  验证 MAE: {Fore.CYAN}{current_val_mae:.4f}{Style.RESET_ALL}')
+
+        # 学习率
+        print(f'  学习率:   {Fore.MAGENTA}{current_lr:.2e}{Style.RESET_ALL}')
+
+        # 最佳模型信息
+        if best_val_loss == current_val_loss:
+            best_mark = f' {Fore.GREEN}★ 当前最佳{Style.RESET_ALL}'
+        else:
+            best_mark = ''
+        print(f'  最佳模型: {Fore.GREEN}{best_val_loss:.4f}{Style.RESET_ALL} @ Epoch {best_epoch}{best_mark}')
+
+        print(f'{Fore.CYAN}{'═' * 70}{Style.RESET_ALL}\n')
+
+    def _print_training_start(self, fold: int, total_epochs: int, train_samples: int, val_samples: int) -> None:
+        """打印训练开始信息"""
+        task_label = f'{Fore.YELLOW}分类{Style.RESET_ALL}' if self.config.task.type == 'classification' else f'{Fore.YELLOW}回归{Style.RESET_ALL}'
+        print(f'\n{Fore.CYAN}╔{'═' * 68}╗{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}║{Style.RESET_ALL}  {Fore.WHITE}开始训练 Fold {fold + 1} - {task_label}任务{Style.RESET_ALL}  '
+              f'{Fore.CYAN}║{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}╠{'═' * 68}╣{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}║{Style.RESET_ALL}  训练样本: {train_samples:4d}  '
+              f'验证样本: {val_samples:4d}  '
+              f'总轮数: {total_epochs:3d}  {Fore.CYAN}║{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}╚{'═' * 68}╝{Style.RESET_ALL}\n')
+
+    def _print_early_stop(self, epoch: int, patience: int, best_epoch: int, best_score: float) -> None:
+        """打印早停信息"""
+        print(f'\n{Fore.YELLOW}{'─' * 50}{Style.RESET_ALL}')
+        print(f'  {Fore.YELLOW}⚠ 早停触发 @ Epoch {epoch}{Style.RESET_ALL} (patience={patience})')
+        print(f'  {Fore.GREEN}✓ 最佳模型 @ Epoch {best_epoch} | val_loss={best_score:.4f}{Style.RESET_ALL}')
+        print(f'{Fore.YELLOW}{'─' * 50}{Style.RESET_ALL}\n')
 
     def train_epoch(
         self,
@@ -788,8 +850,16 @@ class DeepLearningTrainer:
         # 重置历史（根据任务类型）
         self._init_history()
 
+        # 打印训练开始信息
+        self._print_training_start(fold, self.config.training.epochs, len(train_dataset), len(val_dataset))
+
         # 训练循环
-        pbar = tqdm(range(self.config.training.epochs), desc=f'Fold {fold+1}')
+        pbar = tqdm(
+            range(self.config.training.epochs),
+            desc=f'{Fore.CYAN}训练中{Style.RESET_ALL}',
+            ncols=100,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+        )
 
         # 记录初始指标用于阶段性汇总
         initial_train_loss = None
@@ -829,21 +899,20 @@ class DeepLearningTrainer:
 
             # 更新进度条（根据任务类型显示不同指标）
             if self.config.task.type == 'classification':
-                pbar.set_postfix({
-                    'loss': f'{train_loss:.3f}',
-                    'val_loss': f'{val_metrics["loss"]:.3f}',
-                    'Acc': f'{val_metrics["accuracy"]:.3f}',
-                    'F1': f'{val_metrics["f1"]:.3f}',
-                    'lr': f'{current_lr:.1e}',
-                })
+                postfix_dict = {
+                    'loss': f'{Fore.BLUE}{train_loss:.3f}{Style.RESET_ALL}',
+                    'v_loss': f'{Fore.RED}{val_metrics["loss"]:.3f}{Style.RESET_ALL}',
+                    'Acc': f'{Fore.GREEN}{val_metrics["accuracy"]:.3f}{Style.RESET_ALL}',
+                    'F1': f'{Fore.CYAN}{val_metrics["f1"]:.3f}{Style.RESET_ALL}',
+                }
             else:
-                pbar.set_postfix({
-                    'loss': f'{train_loss:.3f}',
-                    'val_loss': f'{val_metrics["loss"]:.3f}',
-                    'R2': f'{val_metrics["r2"]:.3f}',
-                    'MAE': f'{val_metrics["mae"]:.2f}',
-                    'lr': f'{current_lr:.1e}',
-                })
+                postfix_dict = {
+                    'loss': f'{Fore.BLUE}{train_loss:.3f}{Style.RESET_ALL}',
+                    'v_loss': f'{Fore.RED}{val_metrics["loss"]:.3f}{Style.RESET_ALL}',
+                    'R2': f'{Fore.GREEN}{val_metrics["r2"]:.3f}{Style.RESET_ALL}',
+                    'MAE': f'{Fore.CYAN}{val_metrics["mae"]:.2f}{Style.RESET_ALL}',
+                }
+            pbar.set_postfix(postfix_dict)
 
             # 保存最佳模型（处理DataParallel包装）
             if best_metrics is None or val_metrics['loss'] < best_metrics['loss']:
@@ -868,10 +937,12 @@ class DeepLearningTrainer:
 
             # 早停检查
             if early_stopping(val_metrics['loss'], epoch):
-                print(f'\n{"="*60}')
-                print(f'  Early stopping triggered at epoch {epoch+1} (patience={self.config.training.patience})')
-                print(f'  Best model saved at epoch {early_stopping.best_epoch + 1} with val_loss={early_stopping.best_score:.4f}')
-                print(f'{"="*60}\n')
+                self._print_early_stop(
+                    epoch=epoch + 1,
+                    patience=self.config.training.patience,
+                    best_epoch=early_stopping.best_epoch + 1,
+                    best_score=early_stopping.best_score,
+                )
                 logger.info(f'Early stopping at epoch {epoch+1}')
                 break
 
@@ -881,6 +952,26 @@ class DeepLearningTrainer:
                 self.model.module.load_state_dict(best_model_state)
             else:
                 self.model.load_state_dict(best_model_state)
+
+        # 打印训练完成信息
+        print(f'\n{Fore.GREEN}╔{'═' * 68}╗{Style.RESET_ALL}')
+        print(f'{Fore.GREEN}║{Style.RESET_ALL}  {Fore.WHITE}Fold {fold + 1} 训练完成{Style.RESET_ALL}  '
+              f'{Fore.GREEN}║{Style.RESET_ALL}')
+        print(f'{Fore.GREEN}╠{'═' * 68}╣{Style.RESET_ALL}')
+
+        if self.config.task.type == 'classification':
+            print(f'{Fore.GREEN}║{Style.RESET_ALL}  最佳验证精度: {Fore.YELLOW}{best_metrics.get("accuracy", 0):.4f}{Style.RESET_ALL}  '
+                  f'最佳 F1: {Fore.YELLOW}{best_metrics.get("f1", 0):.4f}{Style.RESET_ALL}  '
+                  f'{Fore.GREEN}║{Style.RESET_ALL}')
+        else:
+            print(f'{Fore.GREEN}║{Style.RESET_ALL}  最佳 R²: {Fore.YELLOW}{best_metrics.get("r2", 0):.4f}{Style.RESET_ALL}  '
+                  f'最佳 MAE: {Fore.YELLOW}{best_metrics.get("mae", 0):.4f}{Style.RESET_ALL}  '
+                  f'{Fore.GREEN}║{Style.RESET_ALL}')
+
+        print(f'{Fore.GREEN}║{Style.RESET_ALL}  最佳验证损失: {Fore.YELLOW}{best_metrics.get("loss", 0):.4f}{Style.RESET_ALL}  '
+              f'@ Epoch {Fore.YELLOW}{best_metrics.get("epoch", 0)}{Style.RESET_ALL}  '
+              f'{Fore.GREEN}║{Style.RESET_ALL}')
+        print(f'{Fore.GREEN}╚{'═' * 68}╝{Style.RESET_ALL}\n')
 
         # 保存模型（保存不带DataParallel的状态）
         if self.config.output.save_best:

@@ -3,9 +3,7 @@
 深度学习Transformer实验
 
 使用层级Transformer网络进行眼动注意力预测实验。
-支持两种实验设计：
-- 2×2 矩阵划分：验证跨被试和跨任务泛化能力
-- K-Fold 交叉验证：传统交叉验证
+采用 2×2 矩阵划分设计，验证跨被试和跨任务泛化能力。
 
 需要先运行 scripts/preprocess_data.py 预处理数据。
 """
@@ -19,19 +17,18 @@ import pickle
 import time
 from datetime import datetime
 from typing import List, Dict, Optional
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error, accuracy_score, f1_score
+from torch.utils.data import Dataset
+from sklearn.metrics import accuracy_score, f1_score, r2_score, mean_absolute_error, mean_squared_error
 from tqdm import tqdm
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.models.dl_dataset import SequenceConfig, collate_fn
+from src.models.dl_dataset import SequenceConfig
 from src.models.dl_trainer import DeepLearningTrainer
 from src.data.split_strategy import TwoByTwoSplitter
 from src.config import UnifiedConfig
@@ -42,6 +39,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 指标描述映射
+METRIC_DESCRIPTIONS = {
+    'train': '训练集',
+    'test1': '跨被试泛化（新人旧题）',
+    'test2': '跨任务泛化（旧人新题）',
+    'test3': '双重泛化（新人新题）',
+}
 
 
 class LightweightGazeDataset(Dataset):
@@ -418,15 +423,7 @@ def run_2x2_experiment(
                     'rmse_std': np.std([m['rmse'] for m in split_metrics]) if len(split_metrics) > 1 else 0,
                 }
 
-    # 添加描述
-    metric_descriptions = {
-        'train': '训练集',
-        'test1': '跨被试泛化（新人旧题）',
-        'test2': '跨任务泛化（旧人新题）',
-        'test3': '双重泛化（新人新题）',
-    }
-
-    for split_name, desc in metric_descriptions.items():
+    for split_name, desc in METRIC_DESCRIPTIONS.items():
         if split_name in avg_metrics:
             avg_metrics[split_name]['description'] = desc
 
@@ -450,204 +447,96 @@ def run_2x2_experiment(
 
 
 def print_results(results: Dict) -> None:
-    """打印结果"""
+    """打印 2×2 实验结果"""
     print('\n' + '=' * 70)
     print('EXPERIMENT RESULTS: Hierarchical Transformer Network')
     print('=' * 70)
 
-    # 检测任务类型
+    info = results['experiment_info']
     task_type = results.get('task_type', 'regression')
 
-    # 检测结果类型
-    if 'experiment_info' in results:
-        # 2×2 实验结果
-        info = results['experiment_info']
-        print(f'\n划分策略: 2×2 矩阵')
-        print(f'训练被试数: {info["train_subjects"]}')
-        print(f'训练任务数: {info["train_tasks"]}')
-        print(f'重复次数: {info["n_repeats"]}')
-        if 'random_seed' in info:
-            print(f'随机种子: {info["random_seed"]}')
-        print(f'耗时: {info["duration_seconds"]:.1f}秒')
-        print(f'任务类型: {task_type}')
+    print(f'\n划分策略: 2×2 矩阵')
+    print(f'训练被试数: {info["train_subjects"]}')
+    print(f'训练任务数: {info["train_tasks"]}')
+    print(f'重复次数: {info["n_repeats"]}')
+    print(f'随机种子: {info["random_seed"]}')
+    print(f'耗时: {info["duration_seconds"]:.1f}秒')
+    print(f'任务类型: {task_type}')
 
-        print('\n' + '-' * 50)
-        print('各测试集指标:')
-        print('-' * 50)
+    print('\n' + '-' * 50)
+    print('各测试集指标:')
+    print('-' * 50)
 
-        metrics = results['metrics']
-        for split_name in ['train', 'test1', 'test2', 'test3']:
-            if split_name in metrics:
-                m = metrics[split_name]
-                desc = m.get('description', split_name)
-                print(f'\n  {split_name} ({desc}):')
-                # 根据指标类型显示
-                if 'accuracy' in m:
-                    # 分类任务
-                    if 'accuracy_std' in m and m['accuracy_std'] > 0:
-                        print(f'    Accuracy: {m["accuracy"]:.4f} +/- {m["accuracy_std"]:.4f}')
-                        print(f'    F1:       {m["f1"]:.4f} +/- {m["f1_std"]:.4f}')
-                    else:
-                        print(f'    Accuracy: {m["accuracy"]:.4f}')
-                        print(f'    F1:       {m["f1"]:.4f}')
+    metrics = results['metrics']
+    for split_name in ['train', 'test1', 'test2', 'test3']:
+        if split_name in metrics:
+            m = metrics[split_name]
+            desc = METRIC_DESCRIPTIONS.get(split_name, split_name)
+            print(f'\n  {split_name} ({desc}):')
+            if 'accuracy' in m:
+                if 'accuracy_std' in m and m['accuracy_std'] > 0:
+                    print(f'    Accuracy: {m["accuracy"]:.4f} +/- {m["accuracy_std"]:.4f}')
+                    print(f'    F1:       {m["f1"]:.4f} +/- {m["f1_std"]:.4f}')
                 else:
-                    # 回归任务
-                    if 'r2_std' in m and m['r2_std'] > 0:
-                        print(f'    R2:   {m["r2"]:.4f} +/- {m["r2_std"]:.4f}')
-                        print(f'    MAE:  {m["mae"]:.4f} +/- {m["mae_std"]:.4f}')
-                        print(f'    RMSE: {m["rmse"]:.4f} +/- {m["rmse_std"]:.4f}')
-                    else:
-                        print(f'    R2:   {m["r2"]:.4f}')
-                        print(f'    MAE:  {m["mae"]:.4f}')
-                        print(f'    RMSE: {m["rmse"]:.4f}')
-
-    else:
-        # K-Fold 交叉验证结果
-        print(f'\n任务类型: {task_type}')
-        print('\nOverall Metrics (Cross-Validation):')
-        print('-' * 40)
-
-        if task_type == 'classification':
-            print(f"  Accuracy: {results['overall_metrics']['accuracy']:.4f}")
-            print(f"  F1:       {results['overall_metrics']['f1']:.4f}")
-
-            print('\nFold-wise Metrics:')
-            print('-' * 40)
-            print(f"  Accuracy: {results['fold_accuracy_mean']:.4f} +/- {results['fold_accuracy_std']:.4f}")
-            print(f"  F1:       {results['fold_f1_mean']:.4f} +/- {results['fold_f1_std']:.4f}")
-
-            print('\nPer-Fold Results:')
-            print('-' * 40)
-            for i, metrics in enumerate(results['fold_metrics']):
-                print(f"  Fold {i+1}: Accuracy={metrics['accuracy']:.4f}, F1={metrics['f1']:.4f}")
-        else:
-            print(f"  R2:   {results['overall_metrics']['r2']:.4f}")
-            print(f"  MAE:  {results['overall_metrics']['mae']:.4f}")
-            print(f"  RMSE: {results['overall_metrics']['rmse']:.4f}")
-
-            print('\nFold-wise Metrics:')
-            print('-' * 40)
-            print(f"  R2:  {results['fold_r2_mean']:.4f} +/- {results['fold_r2_std']:.4f}")
-            print(f"  MAE: {results['fold_mae_mean']:.4f} +/- {results['fold_mae_std']:.4f}")
-
-            print('\nPer-Fold Results:')
-            print('-' * 40)
-            for i, metrics in enumerate(results['fold_metrics']):
-                print(f"  Fold {i+1}: R2={metrics['r2']:.4f}, MAE={metrics['mae']:.4f}, RMSE={metrics['rmse']:.4f}")
+                    print(f'    Accuracy: {m["accuracy"]:.4f}')
+                    print(f'    F1:       {m["f1"]:.4f}')
+            else:
+                if 'r2_std' in m and m['r2_std'] > 0:
+                    print(f'    R2:   {m["r2"]:.4f} +/- {m["r2_std"]:.4f}')
+                    print(f'    MAE:  {m["mae"]:.4f} +/- {m["mae_std"]:.4f}')
+                    print(f'    RMSE: {m["rmse"]:.4f} +/- {m["rmse_std"]:.4f}')
+                else:
+                    print(f'    R2:   {m["r2"]:.4f}')
+                    print(f'    MAE:  {m["mae"]:.4f}')
+                    print(f'    RMSE: {m["rmse"]:.4f}')
 
     print('\n' + '=' * 70)
 
 
 def save_results(results: Dict, output_dir: str, config: UnifiedConfig) -> None:
-    """保存结果"""
+    """保存 2×2 实验结果"""
     os.makedirs(output_dir, exist_ok=True)
 
-    # 检测结果类型
-    if 'experiment_info' in results:
-        # 2×2 实验结果
-        results_path = os.path.join(output_dir, 'experiment_results.json')
+    results_path = os.path.join(output_dir, 'experiment_results.json')
 
-        # 转换 numpy 类型为 Python 原生类型
-        def convert_to_serializable(obj):
-            if isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_to_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_to_serializable(item) for item in obj]
-            return obj
+    # 转换 numpy 类型为 Python 原生类型
+    def convert_to_serializable(obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_to_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(item) for item in obj]
+        return obj
 
-        serializable_results = convert_to_serializable(results)
+    serializable_results = convert_to_serializable(results)
 
-        with open(results_path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump(serializable_results, f, indent=2, ensure_ascii=False)
 
-        logger.info(f'Results saved to {results_path}')
+    logger.info(f'Results saved to {results_path}')
 
-        # 保存预测结果 CSV（带 split 标记）
-        if 'predictions' in results and results['predictions']:
-            predictions_list = list(results['predictions'].values())
-            predictions_df = pd.DataFrame(predictions_list)
-            # 根据任务类型选择不同的列
-            if 'true_class' in predictions_list[0]:
-                # 分类任务
-                predictions_df = predictions_df[['subject_id', 'split', 'true_class', 'predicted_class', 'correct']]
-            else:
-                # 回归任务
-                predictions_df = predictions_df[['subject_id', 'split', 'true_score', 'predicted_score', 'error']]
-            predictions_path = os.path.join(output_dir, 'predictions.csv')
-            predictions_df.to_csv(predictions_path, index=False)
-            logger.info(f'Predictions saved to {predictions_path}')
-
-        # 保存配置快照
-        config_path = os.path.join(output_dir, 'config.json')
-        config.save_snapshot(output_dir)
-        logger.info(f'Config saved to {config_path}')
-
-    else:
-        # K-Fold 交叉验证结果（保持兼容）
-        results_path = os.path.join(output_dir, 'dl_experiment_results.json')
-
-        # 根据任务类型构建不同的序列化结果
-        task_type = results.get('task_type', 'regression')
-
-        if task_type == 'classification':
-            serializable_results = {
-                'task_type': 'classification',
-                'overall_metrics': results['overall_metrics'],
-                'fold_accuracy_mean': results['fold_accuracy_mean'],
-                'fold_accuracy_std': results['fold_accuracy_std'],
-                'fold_f1_mean': results['fold_f1_mean'],
-                'fold_f1_std': results['fold_f1_std'],
-                'fold_metrics': results['fold_metrics'],
-                'timestamp': datetime.now().isoformat(),
-            }
+    # 保存预测结果 CSV（带 split 标记）
+    if 'predictions' in results and results['predictions']:
+        predictions_list = list(results['predictions'].values())
+        predictions_df = pd.DataFrame(predictions_list)
+        if 'true_class' in predictions_list[0]:
+            # 分类任务
+            predictions_df = predictions_df[['subject_id', 'split', 'true_class', 'predicted_class', 'correct']]
         else:
-            serializable_results = {
-                'task_type': 'regression',
-                'overall_metrics': results['overall_metrics'],
-                'fold_r2_mean': results['fold_r2_mean'],
-                'fold_r2_std': results['fold_r2_std'],
-                'fold_mae_mean': results['fold_mae_mean'],
-                'fold_mae_std': results['fold_mae_std'],
-                'fold_metrics': results['fold_metrics'],
-                'timestamp': datetime.now().isoformat(),
-            }
-
-        with open(results_path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
-
-        logger.info(f'Results saved to {results_path}')
-
-        # 保存预测结果CSV
-        if task_type == 'classification':
-            # 分类任务：将预测类别转回 1-indexed
-            predictions_array = np.array(results['predictions'])
-            if len(predictions_array.shape) > 1:
-                preds = np.argmax(predictions_array, axis=1) + 1  # 转回 1-indexed
-            else:
-                preds = predictions_array + 1
-            labels = np.array(results['labels']) + 1  # 转回 1-indexed
-
-            predictions_df = pd.DataFrame({
-                'subject_id': results['subject_ids'],
-                'true_class': labels.astype(int),
-                'predicted_class': preds.astype(int),
-                'correct': (preds == labels).astype(int),
-            })
-        else:
-            predictions_df = pd.DataFrame({
-                'subject_id': results['subject_ids'],
-                'true_score': results['labels'],
-                'predicted_score': results['predictions'],
-            })
-        predictions_path = os.path.join(output_dir, 'dl_predictions.csv')
+            # 回归任务
+            predictions_df = predictions_df[['subject_id', 'split', 'true_score', 'predicted_score', 'error']]
+        predictions_path = os.path.join(output_dir, 'predictions.csv')
         predictions_df.to_csv(predictions_path, index=False)
         logger.info(f'Predictions saved to {predictions_path}')
+
+    # 保存配置快照
+    config.save_snapshot(output_dir)
+    logger.info(f'Config saved to {output_dir}/config.json')
 
 
 def load_config(config_path: str) -> tuple[UnifiedConfig, SequenceConfig]:
@@ -666,8 +555,8 @@ def load_config(config_path: str) -> tuple[UnifiedConfig, SequenceConfig]:
     logger.info(f'Loading config from: {config_path}')
     config = UnifiedConfig.from_json(config_path)
 
-    # 创建序列配置（数据属性，暂时使用默认值）
-    seq_config = SequenceConfig()
+    # 从配置创建序列配置
+    seq_config = config.to_seq_config()
 
     return config, seq_config
 
@@ -694,22 +583,15 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     """主函数"""
-    # 解析命令行参数
     args = parse_args()
 
     print('=' * 70)
     print('Hierarchical Transformer Network for Gaze Attention Prediction')
     print('=' * 70)
 
-    # ============================================================
     # 加载配置
-    # ============================================================
     config, seq_config = load_config(args.config)
-
-    # ============================================================
-    # 路径配置
-    # ============================================================
-    processed_data_path = args.data  # 预处理数据路径
+    processed_data_path = args.data
 
     # 打印配置摘要
     print(f'\n{"="*50}')
@@ -773,9 +655,6 @@ def main():
     print(f'  输出目录: {config.experiment.output_dir}')
     print('=' * 60)
 
-    # ============================================================
-    # 运行实验
-    # ============================================================
     # 运行 2×2 矩阵划分实验
     results = run_2x2_experiment(data, config, seq_config)
 
