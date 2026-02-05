@@ -76,7 +76,7 @@ class HierarchicalTransformerNetwork(BaseModel):
     def from_config(
         cls,
         config: UnifiedConfig,
-        seq_config: SequenceConfig,
+        seq_config: SequenceConfig = None,
         **kwargs,
     ) -> 'HierarchicalTransformerNetwork':
         """
@@ -84,12 +84,15 @@ class HierarchicalTransformerNetwork(BaseModel):
 
         Args:
             config: 统一配置对象
-            seq_config: 序列配置对象
+            seq_config: 序列配置对象（如果为None，则从config.sequence自动创建）
             **kwargs: 额外参数（如 num_classes）
 
         Returns:
             模型实例
         """
+        if seq_config is None:
+            seq_config = config.to_seq_config()
+
         # 从 kwargs 获取 num_classes，默认根据 task 类型决定
         num_classes = kwargs.get('num_classes', None)
         if num_classes is None:

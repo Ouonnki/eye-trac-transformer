@@ -25,6 +25,17 @@ class ExperimentConfig:
 
 
 @dataclass
+class SequenceConfigData:
+    """序列配置（数据相关参数，原 SequenceConfig 的可配置版本）"""
+    max_seq_len: int = 100      # 每个片段最大眼动点数
+    max_tasks: int = 30         # 每个被试最大任务数
+    max_segments: int = 30      # 每个任务最大片段数
+    screen_width: int = 1920    # 屏幕宽度
+    screen_height: int = 1080   # 屏幕高度
+    input_dim: int = 7          # 输入特征维度（7基础眼动特征）
+
+
+@dataclass
 class ModelConfig:
     """模型架构配置"""
     segment_d_model: int = 128  # 64 → 128 (序列+任务 concat 后的维度)
@@ -119,6 +130,7 @@ class CADTConfig:
 class UnifiedConfig:
     """统一配置根节点"""
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
+    sequence: SequenceConfigData = field(default_factory=SequenceConfigData)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     task: TaskConfig = field(default_factory=TaskConfig)
@@ -139,6 +151,7 @@ class UnifiedConfig:
         """从字典创建配置"""
         return cls(
             experiment=ExperimentConfig(**data.get('experiment', {})),
+            sequence=SequenceConfigData(**data.get('sequence', {})),
             model=ModelConfig(**data.get('model', {})),
             training=TrainingConfig(**data.get('training', {})),
             task=TaskConfig(**data.get('task', {})),
@@ -163,3 +176,15 @@ class UnifiedConfig:
         output_path = Path(output_dir) / 'config.json'
         self.to_json(str(output_path))
         return str(output_path)
+
+    def to_seq_config(self) -> 'SequenceConfig':
+        """转换为 SequenceConfig（用于数据集和模型）"""
+        from src.models.dl_dataset import SequenceConfig
+        return SequenceConfig(
+            max_seq_len=self.sequence.max_seq_len,
+            max_tasks=self.sequence.max_tasks,
+            max_segments=self.sequence.max_segments,
+            screen_width=self.sequence.screen_width,
+            screen_height=self.sequence.screen_height,
+            input_dim=self.sequence.input_dim,
+        )

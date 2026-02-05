@@ -45,14 +45,17 @@ class CADTTrainer:
     直接使用 UnifiedConfig 和 SequenceConfig 进行配置。
     """
 
-    def __init__(self, config: UnifiedConfig, seq_config: SequenceConfig):
+    def __init__(self, config: UnifiedConfig, seq_config: SequenceConfig = None):
         """
         初始化
 
         Args:
             config: 统一配置对象
-            seq_config: 序列配置对象（数据属性）
+            seq_config: 序列配置对象（如果为None，则从config.sequence自动创建）
         """
+        if seq_config is None:
+            seq_config = config.to_seq_config()
+
         self.config = config
         self.seq_config = seq_config
         self.device = torch.device(config.device.device)

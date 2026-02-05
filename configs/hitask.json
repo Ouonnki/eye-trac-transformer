@@ -7,6 +7,14 @@
     "experiment_name": "",
     "output_dir": "outputs/hi_task_emb_new"
   },
+  "sequence": {
+    "max_seq_len": 150,
+    "max_tasks": 30,
+    "max_segments": 30,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "input_dim": 7
+  },
   "model": {
     "segment_d_model": 96,
     "segment_nhead": 4,

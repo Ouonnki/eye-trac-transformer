@@ -33,7 +33,7 @@ class BaseModel(nn.Module):
     def from_config(
         cls,
         config: UnifiedConfig,
-        seq_config: SequenceConfig,
+        seq_config: SequenceConfig = None,
         **kwargs: Any,
     ) -> 'BaseModel':
         """
@@ -41,7 +41,7 @@ class BaseModel(nn.Module):
 
         Args:
             config: 统一配置对象，包含所有子配置（model, device 等）
-            seq_config: 序列配置对象，包含数据相关参数
+            seq_config: 序列配置对象，包含数据相关参数（如果为None，则从config.sequence自动创建）
             **kwargs: 额外参数（如 num_classes）
 
         Returns:
