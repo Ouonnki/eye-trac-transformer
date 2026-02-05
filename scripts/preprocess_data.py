@@ -233,6 +233,8 @@ def process_single_subject(
                     'click_disappear': trial.config.click_disappear,
                     'has_distractor': trial.config.has_distractor,
                     'distractor_count': trial.config.distractor_count,
+                    'grid_distractor_count': trial.config.grid_distractor_count,
+                    'number_distractor_count': trial.config.number_distractor_count,
                 }
             }
 
@@ -285,7 +287,7 @@ def main():
     parser.add_argument('--screen_height', type=int, default=1080)
     parser.add_argument('--subject_normalize', action='store_true',
                         help='使用被试内标准化（消除个体差异）')
-    parser.add_argument('--workers', type=int, default=1,
+    parser.add_argument('--workers', type=int, default=0,
                         help='并行处理的进程数（默认1，即串行）')
     args = parser.parse_args()
 

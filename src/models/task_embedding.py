@@ -18,10 +18,10 @@ class TaskCondition:
 
     Attributes:
         grid_scale: 视野规模等级 (1=3x3, 2=4x4, 3=5x5, 4=6x6) - 连续值
-        continuous_thinking: 思维是否连续 (0=连续/1-N, 1=不连续/1-99)
+        continuous_thinking: 数字范围类型 (0=1-N, 1=1-99)
         click_disappear: 点击后数字是否消失 (0=否, 1=是)
-        has_distractor: 是否有背景干扰 (0=否, 1=是)
-        has_task_distractor: 是否有任务干扰 (0=否, 1=是)
+        has_distractor: 是否有方格干扰项 (0=否, 1=是)
+        has_task_distractor: 是否有数字干扰项 (0=否, 1=是)
     """
     grid_scale: int  # 1, 2, 3, 4
     continuous_thinking: int  # 0 或 1
@@ -31,8 +31,8 @@ class TaskCondition:
 
     @classmethod
     def from_task_config(cls, grid_size: int, number_range: Tuple[int, int],
-                         click_disappear: bool, has_distractor: bool,
-                         distractor_count: int) -> 'TaskCondition':
+                         click_disappear: bool, grid_distractor_count: int,
+                         number_distractor_count: int) -> 'TaskCondition':
         """
         从原始 TaskConfig 创建 TaskCondition
 
@@ -40,8 +40,8 @@ class TaskCondition:
             grid_size: 方格数量 (9, 16, 25, 36)
             number_range: 数字范围，如 (1, 25) 或 (1, 99)
             click_disappear: 点击后数字是否消失
-            has_distractor: 是否有干扰项
-            distractor_count: 干扰项数量
+            grid_distractor_count: 方格干扰项数量
+            number_distractor_count: 数字干扰项数量
 
         Returns:
             TaskCondition 实例
@@ -50,15 +50,15 @@ class TaskCondition:
         grid_to_scale = {9: 1, 16: 2, 25: 3, 36: 4}
         grid_scale = grid_to_scale.get(grid_size, 3)  # 默认为3 (5x5)
 
-        # 思维连续性: (1, N) 表示连续，(1, 99) 表示不连续
-        continuous_thinking = 0 if number_range[1] < 99 else 1
+        # 数字范围类型: (1, 99) 表示 1-99；其他表示 1-N
+        continuous_thinking = 1 if number_range[1] == 99 else 0
 
         return cls(
             grid_scale=grid_scale,
             continuous_thinking=continuous_thinking,
             click_disappear=int(click_disappear),
-            has_distractor=int(has_distractor),
-            has_task_distractor=int(distractor_count > 0),
+            has_distractor=int(grid_distractor_count > 0),
+            has_task_distractor=int(number_distractor_count > 0),
         )
 
     def to_dict(self) -> Dict[str, int]:
@@ -79,31 +79,34 @@ class TaskEmbedding(nn.Module):
     融合连续嵌入和离散嵌入，生成任务条件向量。
 
     设计说明:
-    - 视野规模（grid_scale）: 连续嵌入，使用可学习向量 Emb * x
+    - 视野规模（grid_scale）: 连续嵌入，使用可学习向量 Emb * scale
     - 其他4个维度: 离散嵌入，使用 nn.Embedding
 
-    输出维度固定为 d_model，用于与序列特征 concat。
+    输出维度 = continuous_emb_dim + 4*embedding_dim
     """
 
     def __init__(
         self,
-        d_model: int,
-        embedding_dim: int = 16,  # 每个离散嵌入的维度
+        continuous_emb_dim: int = 4,   # 连续嵌入（grid_scale）的维度
+        embedding_dim: int = 2,         # 每个离散嵌入的维度
     ):
         """
         初始化
 
         Args:
-            d_model: 输出维度（与序列拼接后的维度一致）
+            continuous_emb_dim: 连续嵌入（grid_scale）的维度
             embedding_dim: 每个离散嵌入的基础维度
         """
         super().__init__()
 
-        self.d_model = d_model
+        self.continuous_emb_dim = continuous_emb_dim
         self.embedding_dim = embedding_dim
+        # 输出维度 = continuous_emb_dim + 4*embedding_dim
+        self.output_dim = continuous_emb_dim + embedding_dim * 4
 
         # 连续嵌入：可学习的基础向量，与 grid_scale 相乘
-        self.grid_base_emb = nn.Parameter(torch.randn(d_model))
+        # grid_scale 范围是 1-4，可学习向量 shape 为 (continuous_emb_dim,)
+        self.grid_base_emb = nn.Parameter(torch.randn(continuous_emb_dim))
 
         # 离散嵌入：4个维度，每个2类
         # 顺序: continuous_thinking, click_disappear, has_distractor, has_task_distractor
@@ -113,13 +116,6 @@ class TaskEmbedding(nn.Module):
             nn.Embedding(2, embedding_dim),  # has_distractor
             nn.Embedding(2, embedding_dim),  # has_task_distractor
         ])
-
-        # 离散嵌入投影到 d_model
-        total_discrete_dim = embedding_dim * 4
-        self.discrete_proj = nn.Linear(total_discrete_dim, d_model)
-
-        # 融合后的投影
-        self.fusion_proj = nn.Linear(d_model * 2, d_model)
 
         self._init_weights()
 
@@ -149,12 +145,14 @@ class TaskEmbedding(nn.Module):
 
         Returns:
             task_emb: (batch, output_dim) 任务嵌入向量
+                     output_dim = continuous_emb_dim + 4 * embedding_dim
         """
-        device = grid_scale.device
-
         # 1. 连续嵌入：grid_base_emb * grid_scale
-        grid_continuous = grid_scale.unsqueeze(1).float()  # (batch, 1)
-        grid_emb = self.grid_base_emb.unsqueeze(0) * grid_continuous  # (batch, d_model)
+        # grid_scale: (batch,) -> (batch, 1)
+        grid_scale_f = grid_scale.unsqueeze(1).float()  # (batch, 1)
+        # base_emb: (continuous_emb_dim,) -> (1, continuous_emb_dim)
+        # result: (batch, continuous_emb_dim)
+        grid_emb = self.grid_base_emb.unsqueeze(0) * grid_scale_f
 
         # 2. 离散嵌入
         discrete_embs = [
@@ -164,12 +162,7 @@ class TaskEmbedding(nn.Module):
             self.discrete_emb[3](has_task_distractor),
         ]
 
-        # 拼接所有离散嵌入
-        discrete_emb = torch.cat(discrete_embs, dim=1)  # (batch, embedding_dim * 4)
-        discrete_emb = self.discrete_proj(discrete_emb)  # (batch, d_model)
-
-        # 3. 融合连续和离散嵌入
-        combined = torch.cat([grid_emb, discrete_emb], dim=1)  # (batch, d_model * 2)
-        task_emb = self.fusion_proj(combined)  # (batch, d_model)
+        # 拼接所有嵌入：连续(continuous_emb_dim) + 离散(4*embedding_dim)
+        task_emb = torch.cat([grid_emb] + discrete_embs, dim=1)
 
         return task_emb

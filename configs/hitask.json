@@ -5,35 +5,36 @@
     "n_repeats": 1,
     "random_seed": 42,
     "experiment_name": "",
-    "output_dir": "outputs/hi-task-res"
+    "output_dir": "outputs/hi_task_emb_new"
   },
   "model": {
-    "input_dim": 7,
-    "segment_d_model": 128,
-    "segment_nhead": 8,
-    "segment_num_layers": 4,
-    "task_d_model": 256,
-    "task_nhead": 8,
-    "task_num_layers": 2,
-    "attention_dim": 64,
-    "dropout": 0.1,
-    "use_task_embedding": true,
+    "input_dim": 12,
+    "segment_d_model": 96,
+    "segment_nhead": 4,
+    "segment_num_layers": 3,
+    "task_d_model": 192,
+    "task_nhead": 4,
+    "task_num_layers": 1,
+    "attention_dim": 48,
+    "dropout": 0.25,
+    "use_task_embedding": false,
     "use_task_encoder": true,
-    "task_embedding_dim": 16
+    "task_embedding_dim": 8
   },
   "training": {
-    "batch_size": 16,
-    "learning_rate": 0.0001,
-    "weight_decay": 0.0001,
+    "batch_size": 8,
+    "learning_rate": 0.00008,
+    "weight_decay": 0.0005,
     "warmup_epochs": 5,
     "epochs": 400,
-    "patience": 100,
-    "grad_clip": 1.0
+    "patience": 200,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.03
   },
   "task": {
     "type": "classification",
     "num_classes": 3,
-    "use_class_weights": false
+    "use_class_weights": true
   },
   "cadt": {
     "target_domain": "test1",
@@ -60,5 +61,13 @@
     "save_figures": true,
     "figure_dpi": 150,
     "summary_interval": 10
+  },
+  "distill": {
+    "enable": false,
+    "teacher_model_path": "outputs/segment_models/20260203_213116/best_model_fold0.pt",
+    "teacher_config_path": "configs/seg.json",
+    "temperature": 2.0,
+    "alpha": 0.55,
+    "aggregation": "mean"
   }
 }

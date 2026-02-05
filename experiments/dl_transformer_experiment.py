@@ -159,6 +159,8 @@ class LightweightGazeDataset(Dataset):
         # 任务条件张量
         task_conditions = np.zeros((self.config.max_tasks, 5), dtype=np.int64)
 
+        base_feature_dim = self.config.input_dim - 5
+
         # 填充数据（数据已在 __init__ 中预归一化）
         for t_idx, task in enumerate(subject_data['tasks'][:self.config.max_tasks]):
             num_segments = min(len(task['segments']), self.config.max_segments)
@@ -168,26 +170,33 @@ class LightweightGazeDataset(Dataset):
             for s_idx, features in enumerate(task['segments'][:self.config.max_segments]):
                 seq_len = min(len(features), self.config.max_seq_len)
                 if seq_len > 0:
-                    segments[t_idx, s_idx, :seq_len, :] = features[:seq_len]
+                    segments[t_idx, s_idx, :seq_len, :base_feature_dim] = features[:seq_len, :base_feature_dim]
                     segment_lengths[t_idx, s_idx] = seq_len
                     segment_mask[t_idx, s_idx] = True
 
             # 处理任务条件
-            if self.use_task_embedding and 'task_conditions' in task:
+            if 'task_conditions' in task:
                 tc = task['task_conditions']
                 # grid_scale 映射: 9→1, 16→2, 25→3, 36→4
                 grid_to_scale = {9: 1, 16: 2, 25: 3, 36: 4}
                 grid_scale = grid_to_scale.get(tc.get('grid_size', 25), 3)
-                # continuous_thinking: 0 if number_range[1] < 99 else 1
+                # continuous_thinking: 1 if number_range == 1-99 else 0 (1-N)
                 number_range = tc.get('number_range', [1, 25])
-                continuous_thinking = 0 if number_range[1] < 99 else 1
+                continuous_thinking = 1 if number_range[1] == 99 else 0
+                # 方格/数字干扰项数量（兼容旧字段）
+                grid_distractor_count = tc.get('grid_distractor_count', tc.get('distractor_count', 0))
+                number_distractor_count = tc.get('number_distractor_count', 0)
                 task_conditions[t_idx] = [
                     grid_scale,
                     continuous_thinking,
                     int(tc.get('click_disappear', False)),
-                    int(tc.get('has_distractor', False)),
-                    int(tc.get('distractor_count', 0) > 0),
+                    int(grid_distractor_count > 0),
+                    int(number_distractor_count > 0),
                 ]
+
+                if num_segments > 0:
+                    task_vec = task_conditions[t_idx].astype(np.float32)
+                    segments[t_idx, :num_segments, :, base_feature_dim:base_feature_dim + 5] = task_vec
 
         # 根据任务类型返回不同的标签
         if self.task_type == 'classification':
@@ -270,11 +279,34 @@ def run_2x2_experiment(
             if name != 'config':
                 logger.info(f'  {name}: {info["samples"]} samples, {info["subjects"]} subjects, {info["tasks"]} tasks')
 
-        # 创建数据集
+        # 从训练集内部划分验证集（同分布验证）
+        train_data = splits['train']
+        val_ratio = 0.2
+        rng = np.random.default_rng(config.experiment.random_seed)
+        indices = rng.permutation(len(train_data))
+        val_size = max(1, int(len(train_data) * val_ratio))
+        val_indices = indices[:val_size]
+        train_indices = indices[val_size:]
+
+        train_data_split = [train_data[i] for i in train_indices]
+        val_data_split = [train_data[i] for i in val_indices]
+
+        logger.info(f'In-distribution Val Split: train={len(train_data_split)}, val={len(val_data_split)}')
+
+        # 创建训练/验证数据集
         train_dataset = LightweightGazeDataset(
-            data=splits['train'],
+            data=train_data_split,
             config=seq_config,
             fit_normalizer=True,
+            task_type=config.task.type,
+            use_task_embedding=config.model.use_task_embedding,
+        )
+
+        val_dataset = LightweightGazeDataset(
+            data=val_data_split,
+            config=seq_config,
+            fit_normalizer=False,
+            normalizer_stats=train_dataset.stats,
             task_type=config.task.type,
             use_task_embedding=config.model.use_task_embedding,
         )
@@ -296,7 +328,7 @@ def run_2x2_experiment(
         trainer = DeepLearningTrainer(config, seq_config)
         train_metrics = trainer.train(
             train_dataset,
-            test_datasets.get('test1', test_datasets.get('test2')),  # 使用 test1 作为验证集
+            val_dataset,
             fold=repeat,
         )
 

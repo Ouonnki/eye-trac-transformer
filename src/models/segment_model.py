@@ -67,10 +67,7 @@ class SegmentEncoder(nn.Module):
         self.num_classes = num_classes
         self.use_task_embedding = use_task_embedding
 
-        # 片段编码器（复用现有的 GazeTransformerEncoder）
-        # 获取任务嵌入配置
-        task_emb_dim = getattr(model_config, 'task_embedding_dim', 16)
-
+        # 片段编码器（不在编码器内注入任务嵌入）
         self.segment_encoder = GazeTransformerEncoder(
             input_dim=model_config.input_dim,
             d_model=d_model,
@@ -80,21 +77,21 @@ class SegmentEncoder(nn.Module):
             dropout=dropout,
             max_seq_len=seq_config.max_seq_len,
             use_gradient_checkpointing=use_gradient_checkpointing,
-            use_task_embedding=use_task_embedding,
-            task_embedding_dim=task_emb_dim,
+            use_task_embedding=False,
+            task_embedding_dim=getattr(model_config, 'task_embedding_dim', 16),
         )
 
-        # 计算编码器的实际输出维度
-        # 使用任务嵌入 concat 时，输出为 d_model * 2
-        if use_task_embedding:
-            actual_d_model = d_model * 2
+        # 任务信息（原始序列）在预测头前拼接
+        self.task_condition_dim = 5
+        if self.use_task_embedding:
+            head_input_dim = d_model + self.task_condition_dim
         else:
-            actual_d_model = d_model
+            head_input_dim = d_model
 
         # 预测头
         self.prediction_head = PredictionHead(
-            input_dim=actual_d_model,
-            hidden_dim=actual_d_model // 2,
+            input_dim=head_input_dim,
+            hidden_dim=head_input_dim // 2,
             output_dim=num_classes,
             dropout=dropout,
         )
@@ -103,7 +100,7 @@ class SegmentEncoder(nn.Module):
         self,
         features: torch.Tensor,
         lengths: Optional[torch.Tensor] = None,
-        task_conditions: Optional[Dict[str, torch.Tensor]] = None,
+        task_conditions: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         前向传播
@@ -111,7 +108,7 @@ class SegmentEncoder(nn.Module):
         Args:
             features: (batch, seq_len, input_dim) 眼动序列
             lengths: (batch,) 每个序列的实际长度
-            task_conditions: 任务条件字典（当 use_task_embedding=True 时需要）
+            task_conditions: (batch, 5) 任务条件张量（当 use_task_embedding=True 时需要）
 
         Returns:
             (batch, num_classes) 预测结果
@@ -125,7 +122,16 @@ class SegmentEncoder(nn.Module):
             mask = None
 
         # 编码片段
-        segment_repr, _ = self.segment_encoder(features, mask, task_conditions)
+        segment_repr, _ = self.segment_encoder(features, mask, None)
+
+        # 原始任务信息在预测头前拼接（可选）
+        if self.use_task_embedding:
+            if task_conditions is not None:
+                task_vec = task_conditions.float()
+            else:
+                task_vec = segment_repr.new_zeros(segment_repr.size(0), self.task_condition_dim)
+
+            segment_repr = torch.cat([segment_repr, task_vec], dim=-1)
 
         # 预测
         output = self.prediction_head(segment_repr)

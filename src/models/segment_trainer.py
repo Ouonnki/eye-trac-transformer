@@ -262,10 +262,7 @@ class SegmentTrainer:
             # 处理任务条件
             task_conditions = None
             if 'task_conditions' in batch and batch['task_conditions'] is not None:
-                task_conditions = {
-                    k: v.to(self.device, non_blocking=True)
-                    for k, v in batch['task_conditions'].items()
-                }
+                task_conditions = batch['task_conditions'].to(self.device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -335,10 +332,7 @@ class SegmentTrainer:
             # 处理任务条件
             task_conditions = None
             if 'task_conditions' in batch and batch['task_conditions'] is not None:
-                task_conditions = {
-                    k: v.to(self.device, non_blocking=True)
-                    for k, v in batch['task_conditions'].items()
-                }
+                task_conditions = batch['task_conditions'].to(self.device, non_blocking=True)
 
             if self.use_amp:
                 with torch.cuda.amp.autocast():
@@ -565,7 +559,7 @@ class SegmentTrainer:
 
     def load_model(self, model_path: str) -> None:
         """加载模型"""
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         self.model = self._create_model()
         self.model.load_state_dict(checkpoint['model_state_dict'])
         logger.info(f'模型已加载: {model_path}')

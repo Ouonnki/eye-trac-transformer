@@ -27,7 +27,7 @@ class SequenceConfig:
     max_segments: int = 30      # 每个任务最大片段数
     screen_width: int = 1920    # 屏幕宽度
     screen_height: int = 1080   # 屏幕高度
-    input_dim: int = 7          # 输入特征维度
+    input_dim: int = 7          # 输入特征维度（7基础眼动特征）
 
 
 class SequenceFeatureExtractor:
@@ -234,8 +234,8 @@ class HierarchicalGazeDataset(Dataset):
                         grid_size=trial.config.grid_size,
                         number_range=trial.config.number_range,
                         click_disappear=trial.config.click_disappear,
-                        has_distractor=trial.config.has_distractor,
-                        distractor_count=trial.config.distractor_count,
+                        grid_distractor_count=trial.config.grid_distractor_count,
+                        number_distractor_count=trial.config.number_distractor_count,
                     ),  # 保存规范化的任务条件
                     'segments': []
                 }
@@ -290,6 +290,9 @@ class HierarchicalGazeDataset(Dataset):
         task_lengths = np.zeros(self.config.max_tasks, dtype=np.int64)
         task_mask = np.zeros(self.config.max_tasks, dtype=np.bool_)
 
+        # 任务条件张量
+        task_conditions = self._get_task_conditions(subject_data)
+
         # 填充数据
         num_tasks = len(subject_data['tasks'])
         for t_idx, task_data in enumerate(subject_data['tasks']):
@@ -300,7 +303,7 @@ class HierarchicalGazeDataset(Dataset):
             for s_idx, features in enumerate(task_data['segments']):
                 seq_len = min(len(features), self.config.max_seq_len)
                 if seq_len > 0:
-                    segments[t_idx, s_idx, :seq_len, :] = features[:seq_len]
+                    segments[t_idx, s_idx, :seq_len, :] = features[:seq_len, :self.config.input_dim]
                     segment_lengths[t_idx, s_idx] = seq_len
                     segment_mask[t_idx, s_idx] = True
 
@@ -310,7 +313,7 @@ class HierarchicalGazeDataset(Dataset):
             'segment_mask': torch.from_numpy(segment_mask),
             'task_lengths': torch.from_numpy(task_lengths),
             'task_mask': torch.from_numpy(task_mask),
-            'task_conditions': torch.from_numpy(self._get_task_conditions(subject_data)),
+            'task_conditions': torch.from_numpy(task_conditions),
             'label': torch.tensor(subject_data['label'], dtype=torch.float32),
             'subject_id': subject_data['subject_id'],
         }
@@ -460,7 +463,7 @@ class SegmentGazeDataset(Dataset):
         # 填充或截断到 max_seq_len
         padded = np.zeros((self.config.max_seq_len, self.config.input_dim), dtype=np.float32)
         if seq_len > 0:
-            padded[:seq_len, :] = features[:seq_len]
+            padded[:seq_len, :] = features[:seq_len, :self.config.input_dim]
 
         # 根据标签类型决定 dtype：整数用 long（分类），浮点用 float32（回归）
         label_value = self.segment_labels[idx]
@@ -482,16 +485,18 @@ class SegmentGazeDataset(Dataset):
             task_id = self.segment_task_ids[idx]
             task_cond = self.task_config_map.get(task_id)
             if task_cond is not None:
-                result['task_conditions'] = task_cond.to_dict()
+                task_dict = task_cond.to_dict()
             else:
                 # 默认值
-                result['task_conditions'] = {
+                task_dict = {
                     'grid_scale': 3,
                     'continuous_thinking': 0,
                     'click_disappear': 0,
                     'has_distractor': 0,
                     'has_task_distractor': 0,
                 }
+
+            result['task_conditions'] = task_dict
 
         return result
 
@@ -544,8 +549,8 @@ class SegmentGazeDataset(Dataset):
                         grid_size=tc['grid_size'],
                         number_range=tc['number_range'],
                         click_disappear=tc['click_disappear'],
-                        has_distractor=tc['has_distractor'],
-                        distractor_count=tc['distractor_count'],
+                        grid_distractor_count=tc.get('grid_distractor_count', tc.get('distractor_count', 0)),
+                        number_distractor_count=tc.get('number_distractor_count', 0),
                     )
 
                 for segment_features in task_dict['segments']:
@@ -607,13 +612,19 @@ def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
 
     # 处理任务条件（如果存在）
     if 'task_conditions' in batch[0]:
-        task_conditions = {
-            'grid_scale': torch.tensor([b['task_conditions']['grid_scale'] for b in batch]),
-            'continuous_thinking': torch.tensor([b['task_conditions']['continuous_thinking'] for b in batch]),
-            'click_disappear': torch.tensor([b['task_conditions']['click_disappear'] for b in batch]),
-            'has_distractor': torch.tensor([b['task_conditions']['has_distractor'] for b in batch]),
-            'has_task_distractor': torch.tensor([b['task_conditions']['has_task_distractor'] for b in batch]),
-        }
+        task_conditions = torch.tensor(
+            [
+                [
+                    b['task_conditions']['grid_scale'],
+                    b['task_conditions']['continuous_thinking'],
+                    b['task_conditions']['click_disappear'],
+                    b['task_conditions']['has_distractor'],
+                    b['task_conditions']['has_task_distractor'],
+                ]
+                for b in batch
+            ],
+            dtype=torch.float32,
+        )
         result['task_conditions'] = task_conditions
 
     return result

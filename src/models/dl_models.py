@@ -30,6 +30,8 @@ class HierarchicalTransformerNetwork(BaseModel):
     1. HierarchicalEncoder: 片段 → 任务 → 被试表示
     2. PredictionHead: 被试表示 → 预测
 
+    任务嵌入在 HierarchicalEncoder 内部处理（任务编码器前）。
+
     使用 from_config() 从配置创建实例。
     """
 
@@ -52,32 +54,22 @@ class HierarchicalTransformerNetwork(BaseModel):
         super().__init__()
 
         self.num_classes = num_classes
-        self.max_tasks = seq_config.max_tasks
-        self.max_segments = seq_config.max_segments
 
-        super().__init__()  # 调用 nn.Module 的初始化
-
-        # 编码器（复用）
+        # 编码器（包含任务嵌入，在任务编码器前）
         self.encoder = HierarchicalEncoder(
             model_config=model_config,
             seq_config=seq_config,
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
-            use_task_embedding=model_config.use_task_embedding,
-            task_embedding_dim=model_config.task_embedding_dim,
-            use_task_encoder=model_config.use_task_encoder,
+            use_task_embedding=getattr(model_config, 'use_task_embedding', False),
+            task_embedding_dim=getattr(model_config, 'task_embedding_dim', 2),
+            continuous_emb_dim=getattr(model_config, 'continuous_emb_dim', 4),
         )
 
-        # 预测头：输入维度取决于是否使用任务编码器
-        if model_config.use_task_encoder:
-            head_input_dim = model_config.task_d_model
-        else:
-            head_input_dim = model_config.segment_d_model
-
-        output_dim = num_classes if num_classes > 1 else 1
+        # 预测头
         self.prediction_head = PredictionHead(
-            input_dim=head_input_dim,
-            hidden_dim=head_input_dim // 2,
-            output_dim=output_dim,
+            input_dim=model_config.task_d_model,
+            hidden_dim=model_config.task_d_model // 2,
+            output_dim=num_classes if num_classes > 1 else 1,
             dropout=model_config.dropout,
         )
 
@@ -136,7 +128,7 @@ class HierarchicalTransformerNetwork(BaseModel):
             - segment_attention: (batch, max_tasks, max_segments) 片段注意力权重
             - task_attention: (batch, max_tasks) 任务注意力权重
         """
-        # 调用编码器
+        # 调用编码器（包含任务嵌入的处理）
         subject_repr, extras = self.encoder(
             segments=segments,
             segment_mask=segment_mask,

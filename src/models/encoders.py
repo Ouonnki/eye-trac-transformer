@@ -40,8 +40,6 @@ class GazeTransformerEncoder(nn.Module):
         dropout: float,
         max_seq_len: int,
         use_gradient_checkpointing: bool = False,
-        use_task_embedding: bool = False,
-        task_embedding_dim: int = 16,
     ):
         """
         初始化
@@ -55,8 +53,6 @@ class GazeTransformerEncoder(nn.Module):
             dropout: Dropout 比例
             max_seq_len: 最大序列长度
             use_gradient_checkpointing: 是否使用梯度检查点节省显存
-            use_task_embedding: 是否使用任务嵌入
-            task_embedding_dim: 任务嵌入基础维度
         """
         super().__init__()
 
@@ -69,29 +65,13 @@ class GazeTransformerEncoder(nn.Module):
         # [CLS] token
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model))
 
-        # 任务嵌入（可选）
-        self.use_task_embedding = use_task_embedding
-        if use_task_embedding:
-            from src.models.task_embedding import TaskEmbedding
-            # 任务嵌入输出维度 = d_model，与序列 concat 后变为 d_model * 2
-            self.task_embedding = TaskEmbedding(
-                d_model=d_model,
-                embedding_dim=task_embedding_dim,
-            )
-            # 使用任务嵌入时，实际处理维度为 d_model * 2
-            actual_d_model = d_model * 2
-        else:
-            actual_d_model = d_model
-
-        # 位置编码（根据是否使用任务嵌入调整维度）
-        self.pos_encoder = PositionalEncoding(actual_d_model, max_len=max_seq_len + 1, dropout=dropout)
+        # 位置编码
+        self.pos_encoder = PositionalEncoding(d_model, max_len=max_seq_len + 1, dropout=dropout)
 
         # Transformer 编码器层（分开存储以支持梯度检查点）
-        # 根据是否使用任务嵌入确定实际维度
-        encoder_d_model = actual_d_model
         self.encoder_layers = nn.ModuleList([
             nn.TransformerEncoderLayer(
-                d_model=encoder_d_model,
+                d_model=d_model,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
@@ -102,13 +82,12 @@ class GazeTransformerEncoder(nn.Module):
         ])
 
         # LayerNorm
-        self.norm = nn.LayerNorm(encoder_d_model)
+        self.norm = nn.LayerNorm(d_model)
 
     def forward(
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        task_conditions: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         前向传播
@@ -116,12 +95,6 @@ class GazeTransformerEncoder(nn.Module):
         Args:
             x: (batch, seq_len, input_dim) 眼动序列
             mask: (batch, seq_len) 有效位置掩码（True 表示有效）
-            task_conditions: (batch, 5) 任务条件张量，列顺序为:
-                - grid_scale: 视野规模等级 (1-4)
-                - continuous_thinking: 思维连续性 (0-1)
-                - click_disappear: 点击消失 (0-1)
-                - has_distractor: 背景干扰 (0-1)
-                - has_task_distractor: 任务干扰 (0-1)
 
         Returns:
             output: (batch, d_model) 片段表示
@@ -135,23 +108,6 @@ class GazeTransformerEncoder(nn.Module):
         # 添加 [CLS] token
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # (batch, 1, d_model)
         x = torch.cat([cls_tokens, x], dim=1)  # (batch, seq_len+1, d_model)
-
-        # 添加任务嵌入（在位置编码之前）
-        if self.use_task_embedding and task_conditions is not None:
-            # 从 (batch, 5) 张量中提取各列
-            task_emb = self.task_embedding(
-                grid_scale=task_conditions[:, 0],
-                continuous_thinking=task_conditions[:, 1],
-                click_disappear=task_conditions[:, 2],
-                has_distractor=task_conditions[:, 3],
-                has_task_distractor=task_conditions[:, 4],
-            )  # (batch, d_model)
-
-            # 广播到所有位置（包括 [CLS] token）
-            task_emb = task_emb.unsqueeze(1).expand(-1, x.size(1), -1)  # (batch, seq_len+1, d_model)
-
-            # 特征维度拼接：序列(64) + 任务(64) = 128
-            x = torch.cat([x, task_emb], dim=-1)  # (batch, seq_len+1, d_model*2)
 
         # 位置编码
         x = self.pos_encoder(x)
@@ -289,8 +245,8 @@ class HierarchicalEncoder(nn.Module):
         seq_config: SequenceConfig,
         use_gradient_checkpointing: bool = False,
         use_task_embedding: bool = False,
-        task_embedding_dim: int = 16,
-        use_task_encoder: bool = True,
+        task_embedding_dim: int = 2,
+        continuous_emb_dim: int = 4,
     ):
         """
         初始化
@@ -299,15 +255,14 @@ class HierarchicalEncoder(nn.Module):
             model_config: 模型架构配置
             seq_config: 序列配置
             use_gradient_checkpointing: 是否使用梯度检查点
-            use_task_embedding: 是否使用任务嵌入
-            task_embedding_dim: 任务嵌入基础维度
-            use_task_encoder: 是否使用任务级编码器（False时直接池化任务表示）
+            use_task_embedding: 是否使用任务嵌入（在任务编码器前）
+            task_embedding_dim: 任务嵌入基础维度（离散嵌入）
+            continuous_emb_dim: 连续嵌入（grid_scale）维度
         """
         super().__init__()
 
         self.max_tasks = seq_config.max_tasks
         self.max_segments = seq_config.max_segments
-        self.use_task_encoder = use_task_encoder
         self.use_task_embedding = use_task_embedding
 
         # 片段编码器
@@ -320,40 +275,41 @@ class HierarchicalEncoder(nn.Module):
             dropout=model_config.dropout,
             max_seq_len=seq_config.max_seq_len,
             use_gradient_checkpointing=use_gradient_checkpointing,
-            use_task_embedding=use_task_embedding,
-            task_embedding_dim=task_embedding_dim,
         )
-
-        # 计算片段编码器的实际输出维度
-        # 使用任务嵌入 concat 时，输出为 segment_d_model * 2
-        if use_task_embedding:
-            actual_segment_d_model = model_config.segment_d_model * 2
-        else:
-            actual_segment_d_model = model_config.segment_d_model
 
         # 任务聚合器（从片段到任务）
         self.task_aggregator = AttentionPooling(
-            input_dim=actual_segment_d_model,
+            input_dim=model_config.segment_d_model,
             attention_dim=model_config.attention_dim,
             dropout=model_config.dropout,
         )
 
-        # 任务序列编码器（可选）
-        if use_task_encoder:
-            self.task_encoder = TaskTransformerEncoder(
-                input_dim=actual_segment_d_model,
-                d_model=model_config.task_d_model,
-                nhead=model_config.task_nhead,
-                num_layers=model_config.task_num_layers,
-                dim_feedforward=model_config.task_d_model * 4,
-                dropout=model_config.dropout,
-                max_tasks=seq_config.max_tasks,
+        # 任务嵌入模块（在任务编码器前）
+        if use_task_embedding:
+            from src.models.task_embedding import TaskEmbedding
+            self.task_embedding = TaskEmbedding(
+                continuous_emb_dim=continuous_emb_dim,
+                embedding_dim=task_embedding_dim,
             )
-            aggregator_input_dim = model_config.task_d_model
+            self.task_emb_output_dim = self.task_embedding.output_dim
+            # 任务编码器输入维度 = 任务表示维度 + 任务嵌入维度
+            task_encoder_input_dim = model_config.segment_d_model + self.task_emb_output_dim
         else:
-            self.task_encoder = None
-            # 不使用任务编码器时，直接使用片段编码器的实际输出维度
-            aggregator_input_dim = actual_segment_d_model
+            self.task_embedding = None
+            self.task_emb_output_dim = 0
+            task_encoder_input_dim = model_config.segment_d_model
+
+        # 任务序列编码器（总是使用）
+        self.task_encoder = TaskTransformerEncoder(
+            input_dim=task_encoder_input_dim,
+            d_model=model_config.task_d_model,
+            nhead=model_config.task_nhead,
+            num_layers=model_config.task_num_layers,
+            dim_feedforward=model_config.task_d_model * 4,
+            dropout=model_config.dropout,
+            max_tasks=seq_config.max_tasks,
+        )
+        aggregator_input_dim = model_config.task_d_model
 
         # 被试聚合器（从任务到被试）
         self.subject_aggregator = AttentionPooling(
@@ -400,18 +356,8 @@ class HierarchicalEncoder(nn.Module):
         else:
             seq_mask = None
 
-        # 处理任务条件：从 (batch, max_tasks, 5) 扩展到 (batch*max_tasks*max_segments, 5)
-        # 每个片段获得其所属任务的任务条件
-        flat_task_conditions = None
-        if task_conditions is not None:
-            # task_conditions: (batch, max_tasks, 5)
-            # 先扩展为 (batch, max_tasks, max_segments, 5)
-            expanded = task_conditions.unsqueeze(2).expand(-1, -1, self.max_segments, -1)
-            # 再展平为 (batch*max_tasks*max_segments, 5)
-            flat_task_conditions = expanded.reshape(batch_size * self.max_tasks * self.max_segments, -1)
-
         # 编码
-        segment_reprs, _ = self.segment_encoder(flat_segments, seq_mask, flat_task_conditions)  # (batch*tasks*segments, d_model)
+        segment_reprs, _ = self.segment_encoder(flat_segments, seq_mask)  # (batch*tasks*segments, d_model)
 
         # 重塑为 (batch, tasks, segments, d_model)
         segment_reprs = segment_reprs.view(batch_size, self.max_tasks, self.max_segments, -1)
@@ -430,12 +376,38 @@ class HierarchicalEncoder(nn.Module):
         task_reprs = task_reprs_flat.view(batch_size, self.max_tasks, -1)
         segment_attentions = segment_attns_flat.view(batch_size, self.max_tasks, self.max_segments)
 
-        # 3. 编码任务序列（可选）
-        if self.use_task_encoder and self.task_encoder is not None:
-            task_encoded = self.task_encoder(task_reprs, task_mask)  # (batch, tasks, task_d_model)
-        else:
-            # 不使用任务编码器，直接使用任务表示
-            task_encoded = task_reprs  # (batch, tasks, segment_d_model)
+        # 3. 任务嵌入：在任务编码器前，将任务条件嵌入与任务表示拼接
+        if self.use_task_embedding and self.task_embedding is not None:
+            if task_conditions is not None:
+                # 对每个任务进行嵌入: (B, T, 5) -> (B, T, task_emb_output_dim)
+                task_embs = []
+                for t_idx in range(self.max_tasks):
+                    tc = task_conditions[:, t_idx, :]  # (batch, 5)
+                    te = self.task_embedding(
+                        grid_scale=tc[:, 0].long(),
+                        continuous_thinking=tc[:, 1].long(),
+                        click_disappear=tc[:, 2].long(),
+                        has_distractor=tc[:, 3].long(),
+                        has_task_distractor=tc[:, 4].long(),
+                    )  # (batch, task_emb_output_dim)
+                    task_embs.append(te)
+                task_emb_seq = torch.stack(task_embs, dim=1)  # (batch, T, task_emb_output_dim)
+                
+                # 应用任务掩码
+                if task_mask is not None:
+                    mask_expanded = task_mask.unsqueeze(-1).float()  # (batch, T, 1)
+                    task_emb_seq = task_emb_seq * mask_expanded
+            else:
+                task_emb_seq = torch.zeros(
+                    batch_size, self.max_tasks, self.task_emb_output_dim,
+                    device=device
+                )
+            
+            # 拼接任务表示和任务嵌入
+            task_reprs = torch.cat([task_reprs, task_emb_seq], dim=-1)  # (batch, T, segment_d_model + task_emb_output_dim)
+
+        # 4. 编码任务序列
+        task_encoded = self.task_encoder(task_reprs, task_mask)  # (batch, tasks, task_d_model)
 
         # 4. 聚合任务到被试
         subject_repr, task_attention = self.subject_aggregator(task_encoded, task_mask)

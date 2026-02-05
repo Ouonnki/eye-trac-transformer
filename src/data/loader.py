@@ -55,7 +55,8 @@ class DataLoader:
         加载题目信息
 
         Returns:
-            DataFrame，包含列：[题目, 方格数量, 数字范围, 点击是否消失, 是否有干扰项, 干扰项总数量]
+            DataFrame，包含列：[题目, 方格数量, 数字范围, 点击是否消失, 是否有干扰项, 干扰项总数量,
+            方格干扰项数量, 数字干扰项数量]
         """
         path = self.data_path / '题目信息.xlsx'
         if not path.exists():
@@ -95,8 +96,11 @@ class DataLoader:
             click_disappear = self._parse_bool(row.get('点击是否消失', False))
             has_distractor = self._parse_bool(row.get('是否有干扰项', False))
 
-            # 解析干扰项数量
+            # 解析干扰项数量（兼容旧字段）
             distractor_count = int(row.get('干扰项总数量', 0) or 0)
+            # 解析方格/数字干扰项数量（新字段）
+            grid_distractor_count = int(row.get('方格干扰项数量', distractor_count) or 0)
+            number_distractor_count = int(row.get('数字干扰项数量', 0) or 0)
 
             config = TaskConfig(
                 task_id=task_id,
@@ -105,6 +109,8 @@ class DataLoader:
                 click_disappear=click_disappear,
                 has_distractor=has_distractor,
                 distractor_count=distractor_count,
+                grid_distractor_count=grid_distractor_count,
+                number_distractor_count=number_distractor_count,
             )
             self._task_configs[task_id] = config
 

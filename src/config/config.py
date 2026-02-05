@@ -38,12 +38,12 @@ class ModelConfig:
     dropout: float = 0.1
 
     # 任务嵌入配置
+    # 是否使用任务嵌入（放在任务编码器前）
     use_task_embedding: bool = False
-    task_embedding_dim: int = 16
-    # 任务嵌入输出维度固定为 segment_d_model，不再可配置
-
-    # 任务级编码器配置
-    use_task_encoder: bool = True
+    # 连续嵌入维度（grid_scale的嵌入维度）
+    continuous_emb_dim: int = 4
+    # 离散嵌入维度（每个离散特征的嵌入维度）
+    task_embedding_dim: int = 2
 
 
 @dataclass
@@ -56,6 +56,7 @@ class TrainingConfig:
     epochs: int = 400
     patience: int = 100
     grad_clip: float = 1.0
+    label_smoothing: float = 0.1
 
 
 @dataclass
@@ -92,6 +93,17 @@ class OutputConfig:
 
 
 @dataclass
+class DistillConfig:
+    """知识蒸馏配置"""
+    enable: bool = False
+    teacher_model_path: str = ''
+    teacher_config_path: str = ''
+    temperature: float = 1.0
+    alpha: float = 0.5
+    aggregation: Literal['mean'] = 'mean'
+
+
+@dataclass
 class CADTConfig:
     """CADT域适应配置（仅CADT模型使用）"""
     target_domain: Literal['test1', 'test2', 'test3'] = 'test1'
@@ -116,6 +128,7 @@ class UnifiedConfig:
     cadt: CADTConfig = field(default_factory=CADTConfig)
     device: DeviceConfig = field(default_factory=DeviceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    distill: DistillConfig = field(default_factory=DistillConfig)
 
     @classmethod
     def from_json(cls, path: str) -> 'UnifiedConfig':
@@ -135,6 +148,7 @@ class UnifiedConfig:
             cadt=CADTConfig(**data.get('cadt', {})),
             device=DeviceConfig(**data.get('device', {})),
             output=OutputConfig(**data.get('output', {})),
+            distill=DistillConfig(**data.get('distill', {})),
         )
 
     def to_json(self, path: str) -> None:

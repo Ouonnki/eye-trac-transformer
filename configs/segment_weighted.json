@@ -8,7 +8,7 @@
     "output_dir": "outputs/segment_models_weighted"
   },
   "model": {
-    "input_dim": 7,
+    "input_dim": 12,
     "segment_d_model": 64,
     "segment_nhead": 4,
     "segment_num_layers": 4,
@@ -24,8 +24,9 @@
     "weight_decay": 0.0001,
     "warmup_epochs": 5,
     "epochs": 200,
-    "patience": 50,
-    "grad_clip": 1.0
+    "patience": 20,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.1
   },
   "task": {
     "type": "classification",

@@ -97,7 +97,9 @@ class TaskConfig:
         number_range: 数字范围 (min, max)
         click_disappear: 点击后数字是否消失
         has_distractor: 是否有干扰项
-        distractor_count: 干扰项数量
+        distractor_count: 干扰项数量（兼容旧字段）
+        grid_distractor_count: 方格干扰项数量
+        number_distractor_count: 数字干扰项数量
     """
     task_id: int
     grid_size: int = 25
@@ -105,6 +107,8 @@ class TaskConfig:
     click_disappear: bool = False
     has_distractor: bool = False
     distractor_count: int = 0
+    grid_distractor_count: int = 0
+    number_distractor_count: int = 0
 
 
 @dataclass

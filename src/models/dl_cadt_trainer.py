@@ -447,8 +447,17 @@ class CADTTrainer:
                 task_mask = batch['task_mask'].to(self.device)
                 segment_lengths = batch['segment_lengths'].to(self.device)
                 labels = batch['label']
+                task_conditions = batch.get('task_conditions')
+                if task_conditions is not None:
+                    task_conditions = task_conditions.to(self.device)
 
-                output = self.model(segments, segment_mask, task_mask, segment_lengths)
+                output = self.model(
+                    segments,
+                    segment_mask,
+                    task_mask,
+                    segment_lengths,
+                    task_conditions=task_conditions,
+                )
                 preds = output['prediction'].argmax(dim=1).cpu().numpy()
 
                 all_preds.extend(preds)

@@ -158,24 +158,25 @@ class CADTTransformerModel(BaseModel):
 
         self.num_classes = num_classes
 
-        # 特征维度取决于是否使用任务编码器和任务嵌入
-        if model_config.use_task_encoder:
-            self.feature_dim = model_config.task_d_model
+        self.use_task_embedding = getattr(model_config, 'use_task_embedding', False)
+        self.max_tasks = seq_config.max_tasks
+        self.task_condition_dim = 5
+
+        # 特征维度（总是使用任务编码器，base_dim = task_d_model）
+        base_dim = model_config.task_d_model
+
+        if self.use_task_embedding:
+            self.feature_dim = base_dim + (self.max_tasks * self.task_condition_dim)
         else:
-            # 使用任务嵌入 concat 时，片段输出维度为 segment_d_model * 2
-            if model_config.use_task_embedding:
-                self.feature_dim = model_config.segment_d_model * 2
-            else:
-                self.feature_dim = model_config.segment_d_model
+            self.feature_dim = base_dim
 
         # 特征编码器（复用层级编码器）
         self.encoder = HierarchicalEncoder(
             model_config=model_config,
             seq_config=seq_config,
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
-            use_task_embedding=model_config.use_task_embedding,
+            use_task_embedding=False,
             task_embedding_dim=model_config.task_embedding_dim,
-            use_task_encoder=model_config.use_task_encoder,
         )
 
         # 分类器
@@ -188,7 +189,8 @@ class CADTTransformerModel(BaseModel):
         self.discriminator2 = Discriminator(self.feature_dim, hidden_size=64)
 
         # 损失函数
-        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=cadt_config.label_smoothing)
+        label_smoothing = getattr(cadt_config, 'label_smoothing', 0.0)
+        self.ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.bce_loss = nn.BCEWithLogitsLoss()
 
@@ -277,9 +279,13 @@ class CADTTransformerModel(BaseModel):
                 task_mask = batch['task_mask'].to(device)
                 segment_lengths = batch['segment_lengths'].to(device)
                 labels = batch['label'].to(device)
+                task_conditions = batch.get('task_conditions')
+                if task_conditions is not None:
+                    task_conditions = task_conditions.to(device)
 
                 # 获取特征
                 features, _ = self.encoder(segments, segment_mask, task_mask, segment_lengths)
+                features = self._append_task_conditions(features, task_conditions, task_mask)
 
                 # 累加各类别特征
                 y_onehot = self.eye_matrix[labels]  # (batch, num_classes)
@@ -321,6 +327,7 @@ class CADTTransformerModel(BaseModel):
         segment_mask: torch.Tensor,
         task_mask: torch.Tensor,
         segment_lengths: Optional[torch.Tensor] = None,
+        task_conditions: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         前向传播
@@ -339,6 +346,7 @@ class CADTTransformerModel(BaseModel):
             - task_attention: 任务注意力权重
         """
         features, extras = self.encoder(segments, segment_mask, task_mask, segment_lengths)
+        features = self._append_task_conditions(features, task_conditions, task_mask)
         prediction = self.classifier(features)
 
         return {
@@ -377,12 +385,18 @@ class CADTTransformerModel(BaseModel):
         src_task_mask = source_batch['task_mask'].to(device)
         src_segment_lengths = source_batch['segment_lengths'].to(device)
         src_labels = source_batch['label'].to(device)
+        src_task_conditions = source_batch.get('task_conditions')
+        if src_task_conditions is not None:
+            src_task_conditions = src_task_conditions.to(device)
 
         # 提取目标域数据
         tgt_segments = target_batch['segments'].to(device)
         tgt_segment_mask = target_batch['segment_mask'].to(device)
         tgt_task_mask = target_batch['task_mask'].to(device)
         tgt_segment_lengths = target_batch['segment_lengths'].to(device)
+        tgt_task_conditions = target_batch.get('task_conditions')
+        if tgt_task_conditions is not None:
+            tgt_task_conditions = tgt_task_conditions.to(device)
 
         batch_size_src = src_segments.size(0)
         batch_size_tgt = tgt_segments.size(0)
@@ -390,6 +404,8 @@ class CADTTransformerModel(BaseModel):
         # 获取特征
         src_features, _ = self.encoder(src_segments, src_segment_mask, src_task_mask, src_segment_lengths)
         tgt_features, _ = self.encoder(tgt_segments, tgt_segment_mask, tgt_task_mask, tgt_segment_lengths)
+        src_features = self._append_task_conditions(src_features, src_task_conditions, src_task_mask)
+        tgt_features = self._append_task_conditions(tgt_features, tgt_task_conditions, tgt_task_mask)
 
         # 预训练阶段：只使用分类损失 + 域分类损失（discriminator2）
         if change_center:
@@ -490,8 +506,13 @@ class CADTTransformerModel(BaseModel):
         segment_lengths = batch['segment_lengths'].to(device)
         labels = batch['label'].to(device)
 
+        task_conditions = batch.get('task_conditions')
+        if task_conditions is not None:
+            task_conditions = task_conditions.to(device)
+
         with torch.no_grad():
             features, _ = self.encoder(segments, segment_mask, task_mask, segment_lengths)
+            features = self._append_task_conditions(features, task_conditions, task_mask)
             pred_logits = self.classifier(features)
             _, pred = torch.max(pred_logits, dim=1)
 
@@ -500,3 +521,25 @@ class CADTTransformerModel(BaseModel):
             total = labels.size(0)
 
         return loss, correct, total
+
+    def _append_task_conditions(
+        self,
+        features: torch.Tensor,
+        task_conditions: Optional[torch.Tensor],
+        task_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """在特征向量后拼接原始任务条件序列"""
+        if not self.use_task_embedding:
+            return features
+
+        if task_conditions is None:
+            flat_task_seq = features.new_zeros(
+                features.size(0), self.max_tasks * self.task_condition_dim
+            )
+        else:
+            task_seq = task_conditions.float()
+            if task_mask is not None:
+                task_seq = task_seq * task_mask.unsqueeze(-1).float()
+            flat_task_seq = task_seq.view(task_seq.size(0), -1)
+
+        return torch.cat([features, flat_task_seq], dim=-1)
