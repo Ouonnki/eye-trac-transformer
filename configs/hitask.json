@@ -18,8 +18,7 @@
     "attention_dim": 48,
     "dropout": 0.25,
     "use_task_embedding": false,
-    "use_task_encoder": true,
-    "task_embedding_dim": 8
+    "task_embedding_dim": 2
   },
   "training": {
     "batch_size": 8,
@@ -36,18 +35,6 @@
     "num_classes": 3,
     "use_class_weights": true
   },
-  "cadt": {
-    "target_domain": "test1",
-    "cadt_kl_weight": 1.0,
-    "cadt_dis_weight": 1.0,
-    "pre_train_epochs": 120,
-    "pre_train_dis_weight": 0.1,
-    "reset_mode": "optimizer",
-    "use_augmentation": true,
-    "encoder_lr": 0.0001,
-    "classifier_lr": 0.001,
-    "discriminator_lr": 0.001
-  },
   "device": {
     "device": "cuda",
     "use_multi_gpu": true,
@@ -61,13 +48,5 @@
     "save_figures": true,
     "figure_dpi": 150,
     "summary_interval": 10
-  },
-  "distill": {
-    "enable": false,
-    "teacher_model_path": "outputs/segment_models/20260203_213116/best_model_fold0.pt",
-    "teacher_config_path": "configs/seg.json",
-    "temperature": 2.0,
-    "alpha": 0.55,
-    "aggregation": "mean"
   }
 }

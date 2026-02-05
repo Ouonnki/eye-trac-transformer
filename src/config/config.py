@@ -40,9 +40,7 @@ class ModelConfig:
     # 任务嵌入配置
     # 是否使用任务嵌入（放在任务编码器前）
     use_task_embedding: bool = False
-    # 连续嵌入维度（grid_scale的嵌入维度）
-    continuous_emb_dim: int = 4
-    # 离散嵌入维度（每个离散特征的嵌入维度）
+    # 任务嵌入维度（所有五个条件使用统一的嵌入维度）
     task_embedding_dim: int = 2
 
 

@@ -81,40 +81,38 @@ class TaskEmbedding(nn.Module):
     设计说明:
     - 视野规模（grid_scale）: 连续嵌入，使用可学习向量 Emb * scale
     - 其他4个维度: 离散嵌入，使用 nn.Embedding
+    - 所有五个条件使用统一的嵌入维度
 
-    输出维度 = continuous_emb_dim + 4*embedding_dim
+    输出维度 = 5 * task_embedding_dim
     """
 
     def __init__(
         self,
-        continuous_emb_dim: int = 4,   # 连续嵌入（grid_scale）的维度
-        embedding_dim: int = 2,         # 每个离散嵌入的维度
+        task_embedding_dim: int = 2,
     ):
         """
         初始化
 
         Args:
-            continuous_emb_dim: 连续嵌入（grid_scale）的维度
-            embedding_dim: 每个离散嵌入的基础维度
+            task_embedding_dim: 所有条件统一的嵌入维度
         """
         super().__init__()
 
-        self.continuous_emb_dim = continuous_emb_dim
-        self.embedding_dim = embedding_dim
-        # 输出维度 = continuous_emb_dim + 4*embedding_dim
-        self.output_dim = continuous_emb_dim + embedding_dim * 4
+        self.task_embedding_dim = task_embedding_dim
+        # 输出维度 = 5 * task_embedding_dim（1个连续 + 4个离散）
+        self.output_dim = task_embedding_dim * 5
 
         # 连续嵌入：可学习的基础向量，与 grid_scale 相乘
-        # grid_scale 范围是 1-4，可学习向量 shape 为 (continuous_emb_dim,)
-        self.grid_base_emb = nn.Parameter(torch.randn(continuous_emb_dim))
+        # grid_scale 范围是 1-4，可学习向量 shape 为 (task_embedding_dim,)
+        self.grid_base_emb = nn.Parameter(torch.randn(task_embedding_dim))
 
         # 离散嵌入：4个维度，每个2类
         # 顺序: continuous_thinking, click_disappear, has_distractor, has_task_distractor
         self.discrete_emb = nn.ModuleList([
-            nn.Embedding(2, embedding_dim),  # continuous_thinking
-            nn.Embedding(2, embedding_dim),  # click_disappear
-            nn.Embedding(2, embedding_dim),  # has_distractor
-            nn.Embedding(2, embedding_dim),  # has_task_distractor
+            nn.Embedding(2, task_embedding_dim),  # continuous_thinking
+            nn.Embedding(2, task_embedding_dim),  # click_disappear
+            nn.Embedding(2, task_embedding_dim),  # has_distractor
+            nn.Embedding(2, task_embedding_dim),  # has_task_distractor
         ])
 
         self._init_weights()
@@ -145,13 +143,13 @@ class TaskEmbedding(nn.Module):
 
         Returns:
             task_emb: (batch, output_dim) 任务嵌入向量
-                     output_dim = continuous_emb_dim + 4 * embedding_dim
+                     output_dim = 5 * task_embedding_dim
         """
         # 1. 连续嵌入：grid_base_emb * grid_scale
         # grid_scale: (batch,) -> (batch, 1)
         grid_scale_f = grid_scale.unsqueeze(1).float()  # (batch, 1)
-        # base_emb: (continuous_emb_dim,) -> (1, continuous_emb_dim)
-        # result: (batch, continuous_emb_dim)
+        # base_emb: (task_embedding_dim,) -> (1, task_embedding_dim)
+        # result: (batch, task_embedding_dim)
         grid_emb = self.grid_base_emb.unsqueeze(0) * grid_scale_f
 
         # 2. 离散嵌入
@@ -162,7 +160,7 @@ class TaskEmbedding(nn.Module):
             self.discrete_emb[3](has_task_distractor),
         ]
 
-        # 拼接所有嵌入：连续(continuous_emb_dim) + 离散(4*embedding_dim)
+        # 拼接所有嵌入：连续(task_embedding_dim) + 离散(4*task_embedding_dim) = 5*task_embedding_dim
         task_emb = torch.cat([grid_emb] + discrete_embs, dim=1)
 
         return task_emb

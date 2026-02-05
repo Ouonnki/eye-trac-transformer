@@ -62,7 +62,6 @@ class HierarchicalTransformerNetwork(BaseModel):
             use_gradient_checkpointing=device_config.use_gradient_checkpointing,
             use_task_embedding=getattr(model_config, 'use_task_embedding', False),
             task_embedding_dim=getattr(model_config, 'task_embedding_dim', 2),
-            continuous_emb_dim=getattr(model_config, 'continuous_emb_dim', 4),
         )
 
         # 预测头

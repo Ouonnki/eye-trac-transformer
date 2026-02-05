@@ -246,7 +246,6 @@ class HierarchicalEncoder(nn.Module):
         use_gradient_checkpointing: bool = False,
         use_task_embedding: bool = False,
         task_embedding_dim: int = 2,
-        continuous_emb_dim: int = 4,
     ):
         """
         初始化
@@ -256,8 +255,7 @@ class HierarchicalEncoder(nn.Module):
             seq_config: 序列配置
             use_gradient_checkpointing: 是否使用梯度检查点
             use_task_embedding: 是否使用任务嵌入（在任务编码器前）
-            task_embedding_dim: 任务嵌入基础维度（离散嵌入）
-            continuous_emb_dim: 连续嵌入（grid_scale）维度
+            task_embedding_dim: 任务嵌入维度（所有五个条件统一）
         """
         super().__init__()
 
@@ -288,8 +286,7 @@ class HierarchicalEncoder(nn.Module):
         if use_task_embedding:
             from src.models.task_embedding import TaskEmbedding
             self.task_embedding = TaskEmbedding(
-                continuous_emb_dim=continuous_emb_dim,
-                embedding_dim=task_embedding_dim,
+                task_embedding_dim=task_embedding_dim,
             )
             self.task_emb_output_dim = self.task_embedding.output_dim
             # 任务编码器输入维度 = 任务表示维度 + 任务嵌入维度
