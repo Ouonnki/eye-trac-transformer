@@ -14,7 +14,8 @@ from datetime import datetime
 
 import torch
 import numpy as np
-from torch.utils.data import DataLoader, random_split
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import classification_report, confusion_matrix
 
 # 添加项目根目录
@@ -30,6 +31,45 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def plot_training_curves(history: dict, output_path: Path):
+    """绘制训练曲线"""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    
+    epochs = range(1, len(history['train_loss']) + 1)
+    
+    # Loss
+    axes[0].plot(epochs, history['train_loss'], 'b-', label='Train')
+    axes[0].plot(epochs, history['val_loss'], 'r-', label='Val')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].set_title('Loss Curve')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    
+    # Accuracy
+    axes[1].plot(epochs, history['train_acc'], 'b-', label='Train')
+    axes[1].plot(epochs, history['val_acc'], 'r-', label='Val')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('Accuracy')
+    axes[1].set_title('Accuracy Curve')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    
+    # F1
+    axes[2].plot(epochs, history['train_f1'], 'b-', label='Train')
+    axes[2].plot(epochs, history['val_f1'], 'r-', label='Val')
+    axes[2].set_xlabel('Epoch')
+    axes[2].set_ylabel('F1 Score')
+    axes[2].set_title('F1 Curve')
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    logger.info(f"训练曲线已保存: {output_path}")
 
 
 def set_seed(seed: int):
@@ -49,6 +89,91 @@ def compute_class_weights(labels: np.ndarray) -> torch.Tensor:
     return torch.tensor(weights, dtype=torch.float32)
 
 
+def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, seed=42):
+    """
+    2×2划分：被试维度 × 题目维度
+    
+    划分方式：
+    - 被试分为：前train_subjects人(训练) / 剩余(测试)
+    - 题目分为：前train_tasks题(训练) / 剩余(测试)
+    
+    产生5个集合：
+    - train_pool: 前train_subjects人 × 前train_tasks题 (用于划分train/val)
+    - test1: 剩余被试 × 前train_tasks题
+    - test2: 前train_subjects人 × 剩余题目
+    - test3: 剩余被试 × 剩余题目
+    
+    Args:
+        dataset: 数据集
+        train_subjects: 训练集被试数量(前N人)
+        train_tasks: 训练集题目数量(前N题)
+        train_val_split: 从train_pool中划分train/val的比例
+        seed: 随机种子
+    
+    Returns:
+        train_indices, val_indices, test1_indices, test2_indices, test3_indices
+    """
+    # 获取所有被试ID并排序
+    subject_ids = sorted(list(set([s['subject_id'] for s in dataset.samples])))
+    
+    # 被试分组
+    train_subject_ids = subject_ids[:train_subjects]
+    test_subject_ids = subject_ids[train_subjects:]
+    
+    train_subject_set = set(train_subject_ids)
+    test_subject_set = set(test_subject_ids)
+    
+    # 题目分组
+    train_task_ids = set(range(1, train_tasks + 1))  # 1-20
+    test_task_ids = set(range(train_tasks + 1, 31))   # 21-30
+    
+    # 2×2划分
+    train_pool = []   # 前100人 × 前20题
+    test1 = []        # 后57人 × 前20题
+    test2 = []        # 前100人 × 后10题
+    test3 = []        # 后57人 × 后10题
+    
+    for i, sample in enumerate(dataset.samples):
+        sid = sample['subject_id']
+        tid = sample['task_id']
+        
+        if sid in train_subject_set and tid in train_task_ids:
+            train_pool.append(i)
+        elif sid in test_subject_set and tid in train_task_ids:
+            test1.append(i)
+        elif sid in train_subject_set and tid in test_task_ids:
+            test2.append(i)
+        elif sid in test_subject_set and tid in test_task_ids:
+            test3.append(i)
+    
+    # 从train_pool中按被试划分train/val
+    rng = np.random.RandomState(seed)
+    train_pool_subjects = sorted(list(set([dataset.samples[i]['subject_id'] for i in train_pool])))
+    rng.shuffle(train_pool_subjects)
+    
+    n_train = int(len(train_pool_subjects) * train_val_split)
+    train_subject_set = set(train_pool_subjects[:n_train])
+    val_subject_set = set(train_pool_subjects[n_train:])
+    
+    train_indices = [i for i in train_pool if dataset.samples[i]['subject_id'] in train_subject_set]
+    val_indices = [i for i in train_pool if dataset.samples[i]['subject_id'] in val_subject_set]
+    
+    return train_indices, val_indices, test1, test2, test3
+
+
+class Subset(Dataset):
+    """数据集子集"""
+    def __init__(self, dataset, indices):
+        self.dataset = dataset
+        self.indices = indices
+    
+    def __getitem__(self, idx):
+        return self.dataset[self.indices[idx]]
+    
+    def __len__(self):
+        return len(self.indices)
+
+
 def main():
     # 加载配置
     config_path = Path('configs/task_level.json')
@@ -61,9 +186,12 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"使用设备: {device}")
     
-    # 创建输出目录
-    output_dir = Path(config['experiment']['output_dir'])
+    # 创建带时间戳的输出目录 (隔离每次训练)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    exp_name = config['experiment'].get('name', 'exp')
+    output_dir = Path(config['experiment']['output_dir']) / f"{exp_name}_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"输出目录: {output_dir}")
     
     # 加载预处理数据
     logger.info("加载预处理数据...")
@@ -82,25 +210,51 @@ def main():
         fit_normalizer=True,
     )
     
-    # 收集所有标签用于划分和计算权重
+    # 收集所有标签
     all_labels = np.array([s['label'] for s in dataset.samples])
     logger.info(f"数据集总样本数: {len(dataset)}")
     logger.info(f"类别分布: {np.bincount(all_labels)}")
     
-    # 数据集划分
-    total_size = len(dataset)
-    train_size = int(total_size * config['data']['train_split'])
-    val_size = int(total_size * config['data']['val_split'])
-    test_size = total_size - train_size - val_size
-    
-    train_dataset, val_dataset, test_dataset = random_split(
-        dataset, [train_size, val_size, test_size]
+    # 2×2划分数据集（被试 × 题目）
+    logger.info("2×2划分数据集...")
+    train_indices, val_indices, test1_indices, test2_indices, test3_indices = split_2x2(
+        dataset,
+        train_subjects=config['experiment']['train_subjects'],
+        train_tasks=config['experiment']['train_tasks'],
+        train_val_split=config['training']['train_val_split'],
+        seed=config['experiment']['random_seed']
     )
-    logger.info(f"数据集划分: 训练{train_size} / 验证{val_size} / 测试{test_size}")
     
-    # 计算类别权重
-    train_labels = [dataset.samples[i]['label'] for i in train_dataset.indices]
+    train_dataset = Subset(dataset, train_indices)
+    val_dataset = Subset(dataset, val_indices)
+    test1_dataset = Subset(dataset, test1_indices)
+    test2_dataset = Subset(dataset, test2_indices)
+    test3_dataset = Subset(dataset, test3_indices)
+    
+    # 统计各集合的被试数和样本数
+    def get_stats(indices):
+        subjects = set([dataset.samples[i]['subject_id'] for i in indices])
+        tasks = set([dataset.samples[i]['task_id'] for i in indices])
+        return len(subjects), len(tasks), len(indices)
+    
+    train_s, train_t, train_n = get_stats(train_indices)
+    val_s, val_t, val_n = get_stats(val_indices)
+    test1_s, test1_t, test1_n = get_stats(test1_indices)
+    test2_s, test2_t, test2_n = get_stats(test2_indices)
+    test3_s, test3_t, test3_n = get_stats(test3_indices)
+    
+    logger.info(f"训练集:   {train_s}被试 × {train_t}题 = {train_n}样本")
+    logger.info(f"验证集:   {val_s}被试 × {val_t}题 = {val_n}样本")
+    logger.info(f"测试集1:  {test1_s}被试 × {test1_t}题 = {test1_n}样本 (新被试+旧题)")
+    logger.info(f"测试集2:  {test2_s}被试 × {test2_t}题 = {test2_n}样本 (旧被试+新题)")
+    logger.info(f"测试集3:  {test3_s}被试 × {test3_t}题 = {test3_n}样本 (新被试+新题)")
+    
+    # 计算类别权重（基于训练集）
+    train_labels = [dataset.samples[i]['label'] for i in train_indices]
     class_weights = compute_class_weights(np.array(train_labels))
+    train_dist = np.bincount(train_labels, minlength=3)
+    logger.info(f"训练集类别分布: {train_dist}")
+    logger.info(f"类别权重: {class_weights}")
     logger.info(f"类别权重: {class_weights}")
     
     # 创建DataLoader
@@ -119,8 +273,22 @@ def main():
         num_workers=4,
         pin_memory=True,
     )
-    test_loader = DataLoader(
-        test_dataset,
+    test1_loader = DataLoader(
+        test1_dataset,
+        batch_size=config['training']['batch_size'],
+        collate_fn=task_level_collate_fn,
+        num_workers=4,
+        pin_memory=True,
+    )
+    test2_loader = DataLoader(
+        test2_dataset,
+        batch_size=config['training']['batch_size'],
+        collate_fn=task_level_collate_fn,
+        num_workers=4,
+        pin_memory=True,
+    )
+    test3_loader = DataLoader(
+        test3_dataset,
         batch_size=config['training']['batch_size'],
         collate_fn=task_level_collate_fn,
         num_workers=4,
@@ -159,61 +327,108 @@ def main():
     )
     
     # 训练循环
-    best_val_acc = 0.0
+    best_val_f1 = 0.0
     patience_counter = 0
-    history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
+    history = {
+        'train_loss': [], 'train_acc': [], 'train_f1': [],
+        'val_loss': [], 'val_acc': [], 'val_f1': []
+    }
     
     logger.info("开始训练...")
-    for epoch in range(config['training']['epochs']):
-        logger.info(f"\nEpoch {epoch+1}/{config['training']['epochs']}")
-        
+    print("\n" + "="*80)
+    print(f"{'Epoch':<8} {'Train Loss':<12} {'Train Acc':<12} {'Train F1':<12} {'Val Loss':<12} {'Val Acc':<12} {'Val F1':<12}")
+    print("="*80)
+    
+    for epoch in range(1, config['training']['epochs'] + 1):
         # 训练
-        train_metrics = trainer.train_epoch(train_loader)
-        logger.info(f"Train - Loss: {train_metrics['loss']:.4f}, Acc: {train_metrics['accuracy']:.4f}")
+        train_metrics = trainer.train_epoch(train_loader, epoch, config['training']['epochs'])
         
         # 验证
-        val_metrics = trainer.evaluate(val_loader)
-        logger.info(f"Val   - Loss: {val_metrics['loss']:.4f}, Acc: {val_metrics['accuracy']:.4f}")
+        val_metrics = trainer.evaluate(val_loader, desc=f"Epoch {epoch}/{config['training']['epochs']} [Val]")
         
         # 记录历史
         history['train_loss'].append(train_metrics['loss'])
         history['train_acc'].append(train_metrics['accuracy'])
+        history['train_f1'].append(train_metrics['f1'])
         history['val_loss'].append(val_metrics['loss'])
         history['val_acc'].append(val_metrics['accuracy'])
+        history['val_f1'].append(val_metrics['f1'])
+        
+        # 打印一行结果
+        print(f"{epoch:<8} {train_metrics['loss']:<12.4f} {train_metrics['accuracy']:<12.4f} {train_metrics['f1']:<12.4f} "
+              f"{val_metrics['loss']:<12.4f} {val_metrics['accuracy']:<12.4f} {val_metrics['f1']:<12.4f}")
         
         # 学习率调整
         trainer.scheduler.step(val_metrics['loss'])
         
-        # 早停检查
-        if val_metrics['accuracy'] > best_val_acc:
-            best_val_acc = val_metrics['accuracy']
+        # 早停检查 (使用Val F1作为标准)
+        if val_metrics['f1'] > best_val_f1:
+            best_val_f1 = val_metrics['f1']
             patience_counter = 0
             # 保存最佳模型
             best_model_path = output_dir / 'best_model.pt'
-            trainer.save_checkpoint(best_model_path, epoch, best_val_acc)
-            logger.info(f"保存最佳模型 (val_acc={best_val_acc:.4f})")
+            trainer.save_checkpoint(best_model_path, epoch, best_val_f1)
         else:
             patience_counter += 1
             if patience_counter >= config['training']['patience']:
-                logger.info(f"早停! {config['training']['patience']}个epoch没有改善")
+                print(f"\n早停! {config['training']['patience']}个epoch没有改善 (Best Val F1: {best_val_f1:.4f})")
                 break
     
+    print("="*80)
+    
     # 加载最佳模型进行测试
-    logger.info("\n加载最佳模型进行测试...")
+    print("\n加载最佳模型进行测试...")
     trainer.load_checkpoint(output_dir / 'best_model.pt')
-    test_metrics = trainer.evaluate(test_loader)
-    logger.info(f"Test - Loss: {test_metrics['loss']:.4f}, Acc: {test_metrics['accuracy']:.4f}")
+    
+    # 定义测试集
+    test_sets = [
+        ("Test1 (新被试+旧题)", test1_loader),
+        ("Test2 (旧被试+新题)", test2_loader),
+        ("Test3 (新被试+新题)", test3_loader),
+    ]
+    
+    print("\n" + "="*70)
+    print("测试结果汇总")
+    print("="*70)
+    print(f"{'数据集':<25} {'Loss':<10} {'Acc':<10} {'F1':<10}")
+    print("-"*70)
+    
+    all_test_results = {}
+    
+    for name, loader in test_sets:
+        metrics = trainer.evaluate(loader, desc=name)
+        all_test_results[name] = metrics
+        print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1']:<10.4f}")
+    
+    print("="*70)
     
     # 详细评估报告
-    logger.info("\n分类报告:")
-    print(classification_report(
-        test_metrics['labels'], 
-        test_metrics['predictions'],
-        target_names=['Class 0', 'Class 1', 'Class 2']
-    ))
+    for name, metrics in all_test_results.items():
+        print(f"\n{'='*60}")
+        print(f"{name} - 详细报告")
+        print("="*60)
+        print(classification_report(
+            metrics['labels'], 
+            metrics['predictions'],
+            target_names=['Class 0', 'Class 1', 'Class 2'],
+            digits=4
+        ))
+        print("混淆矩阵:")
+        print(confusion_matrix(metrics['labels'], metrics['predictions']))
     
-    logger.info("混淆矩阵:")
-    print(confusion_matrix(test_metrics['labels'], test_metrics['predictions']))
+    # 保存测试结果
+    test_results = {}
+    for name, metrics in all_test_results.items():
+        test_results[name] = {
+            'loss': metrics['loss'],
+            'accuracy': metrics['accuracy'],
+            'f1': metrics['f1'],
+            'predictions': [int(p) for p in metrics['predictions']],
+            'labels': [int(l) for l in metrics['labels']],
+        }
+    
+    with open(output_dir / 'test_results.json', 'w') as f:
+        json.dump(test_results, f, indent=2)
     
     # 保存配置和历史
     with open(output_dir / 'config.json', 'w') as f:
@@ -222,7 +437,16 @@ def main():
     with open(output_dir / 'history.json', 'w') as f:
         json.dump(history, f, indent=2)
     
+    # 绘制并保存训练曲线
+    plot_training_curves(history, output_dir / 'training_curves.png')
+    
     logger.info(f"\n训练完成! 结果保存在: {output_dir}")
+    logger.info("产出文件:")
+    logger.info(f"  - best_model.pt: 最佳模型检查点")
+    logger.info(f"  - config.json: 配置文件")
+    logger.info(f"  - history.json: 训练历史")
+    logger.info(f"  - training_curves.png: 训练曲线图")
+    logger.info(f"  - test_results.json: 测试结果")
 
 
 if __name__ == '__main__':

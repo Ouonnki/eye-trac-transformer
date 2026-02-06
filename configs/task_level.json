@@ -2,7 +2,10 @@
   "experiment": {
     "name": "task_level_classification",
     "output_dir": "outputs/task_level",
-    "random_seed": 42
+    "random_seed": 42,
+    "train_subjects": 100,
+    "train_tasks": 20,
+    "n_repeats": 1
   },
   "sequence": {
     "max_seq_len": 300,
@@ -28,12 +31,10 @@
     "weight_decay": 0.001,
     "grad_clip": 1.0,
     "patience": 15,
+    "train_val_split": 0.9,
     "use_class_weights": true
   },
   "data": {
-    "processed_data_path": "data/processed/processed_data.pkl",
-    "train_split": 0.7,
-    "val_split": 0.15,
-    "test_split": 0.15
+    "processed_data_path": "data/processed/processed_data_subject_norm.pkl"
   }
 }

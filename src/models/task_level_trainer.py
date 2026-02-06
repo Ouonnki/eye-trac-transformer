@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
+from sklearn.metrics import f1_score
 
 from src.models.task_level_model import TaskLevelEncoder
 
@@ -51,14 +52,15 @@ class TaskLevelTrainer:
             self.optimizer, mode='min', patience=10, factor=0.5
         )
 
-    def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
+    def train_epoch(self, dataloader: DataLoader, epoch: int, total_epochs: int) -> Dict[str, float]:
         """训练一个epoch"""
         self.model.train()
         total_loss = 0.0
-        correct = 0
-        total = 0
+        all_preds = []
+        all_labels = []
         
-        for batch in tqdm(dataloader, desc="Training"):
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{total_epochs} [Train]", leave=False)
+        for batch in pbar:
             self.optimizer.zero_grad()
             
             segments = batch['segments'].to(self.device)
@@ -79,25 +81,28 @@ class TaskLevelTrainer:
             
             total_loss += loss.item()
             pred = logits.argmax(dim=1)
-            correct += (pred == labels).sum().item()
-            total += labels.size(0)
+            all_preds.extend(pred.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
+            # 更新进度条
+            acc = (np.array(all_preds) == np.array(all_labels)).mean()
+            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'acc': f'{acc:.4f}'})
         
         avg_loss = total_loss / len(dataloader)
-        accuracy = correct / total
+        accuracy = (np.array(all_preds) == np.array(all_labels)).mean()
+        f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
         
-        return {'loss': avg_loss, 'accuracy': accuracy}
+        return {'loss': avg_loss, 'accuracy': accuracy, 'f1': f1}
 
     @torch.no_grad()
-    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, dataloader: DataLoader, desc: str = "Eval") -> Dict[str, float]:
         """评估"""
         self.model.eval()
         total_loss = 0.0
-        correct = 0
-        total = 0
         all_preds = []
         all_labels = []
         
-        for batch in dataloader:
+        for batch in tqdm(dataloader, desc=desc, leave=False):
             segments = batch['segments'].to(self.device)
             segment_mask = batch['segment_mask'].to(self.device)
             task_conditions = batch['task_conditions'].to(self.device)
@@ -108,18 +113,17 @@ class TaskLevelTrainer:
             
             total_loss += loss.item()
             pred = logits.argmax(dim=1)
-            correct += (pred == labels).sum().item()
-            total += labels.size(0)
-            
             all_preds.extend(pred.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
         
         avg_loss = total_loss / len(dataloader)
-        accuracy = correct / total
+        accuracy = (np.array(all_preds) == np.array(all_labels)).mean()
+        f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
         
         return {
             'loss': avg_loss,
             'accuracy': accuracy,
+            'f1': f1,
             'predictions': all_preds,
             'labels': all_labels,
         }
