@@ -338,12 +338,15 @@ def main():
     )
     
     # 训练循环
-    best_val_f1 = 0.0
+    early_stop_metric = config['training'].get('early_stop_metric', 'f1_weighted')
+    best_val_metric = 0.0
     patience_counter = 0
     history = {
-        'train_loss': [], 'train_acc': [], 'train_f1': [],
-        'val_loss': [], 'val_acc': [], 'val_f1': []
+        'train_loss': [], 'train_acc': [], 'train_f1': [], 'train_f1_macro': [],
+        'val_loss': [], 'val_acc': [], 'val_f1': [], 'val_f1_macro': []
     }
+    
+    logger.info(f"早停监控指标: {early_stop_metric}")
     
     logger.info("开始训练...")
     print("\n" + "="*85)
@@ -361,10 +364,12 @@ def main():
         # 记录历史
         history['train_loss'].append(train_metrics['loss'])
         history['train_acc'].append(train_metrics['accuracy'])
-        history['train_f1'].append(train_metrics['f1'])
+        history['train_f1'].append(train_metrics['f1_weighted'])
+        history['train_f1_macro'].append(train_metrics['f1_macro'])
         history['val_loss'].append(val_metrics['loss'])
         history['val_acc'].append(val_metrics['accuracy'])
-        history['val_f1'].append(val_metrics['f1'])
+        history['val_f1'].append(val_metrics['f1_weighted'])
+        history['val_f1_macro'].append(val_metrics['f1_macro'])
         
         # 打印一行结果 (同时显示Weighted F1和Macro F1)
         print(f"{epoch:<6} "
@@ -374,23 +379,24 @@ def main():
         # 学习率调整
         trainer.scheduler.step(val_metrics['loss'])
         
-        # 早停检查 (使用Val F1作为标准)
-        if val_metrics['f1'] > best_val_f1:
-            best_val_f1 = val_metrics['f1']
+        # 早停检查
+        current_metric = val_metrics[early_stop_metric]
+        if current_metric > best_val_metric:
+            best_val_metric = current_metric
             patience_counter = 0
             # 保存最佳模型
             best_model_path = output_dir / 'best_model.pt'
-            trainer.save_checkpoint(best_model_path, epoch, best_val_f1)
+            trainer.save_checkpoint(best_model_path, epoch, best_val_metric)
         else:
             patience_counter += 1
             if patience_counter >= config['training']['patience']:
-                print(f"\n早停! {config['training']['patience']}个epoch没有改善 (Best Val F1w: {best_val_f1:.4f})")
+                print(f"\n早停! {config['training']['patience']}个epoch没有改善 (Best Val {early_stop_metric}: {best_val_metric:.4f})")
                 break
     
     print("="*85)
     
     # 加载最佳模型进行测试
-    print("\n加载最佳模型进行测试...")
+    print(f"\n加载最佳模型 (Best Val {early_stop_metric}: {best_val_metric:.4f}) 进行测试...")
     trainer.load_checkpoint(output_dir / 'best_model.pt')
     
     # 定义测试集
