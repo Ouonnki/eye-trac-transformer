@@ -25,17 +25,17 @@
     "use_gradient_checkpointing": false
   },
   "training": {
-    "batch_size": 48,
+    "batch_size": 100,
     "epochs": 100,
-    "lr": 0.0001,
+    "lr": 0.00001,
     "weight_decay": 0.001,
     "grad_clip": 1.0,
-    "patience": 15,
+    "patience": 20,
     "early_stop_metric": "f1_macro",
     "train_val_split": 0.9,
     "use_class_weights": true,
     "class_weights_mode": "manual",
-    "class_weights": [5.0, 1.0, 5.0]
+    "class_weights": [8.0, 1.0, 6.0]
   },
   "data": {
     "processed_data_path": "data/processed/processed_data.pkl"

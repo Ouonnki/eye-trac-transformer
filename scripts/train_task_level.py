@@ -33,38 +33,72 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def plot_training_curves(history: dict, output_path: Path):
-    """绘制训练曲线"""
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+def plot_training_curves(history: dict, output_path: Path, early_stop_epoch: int = None, early_stop_metric: str = 'f1_macro'):
+    """绘制训练曲线（改进版：同时显示Weighted和Macro F1）"""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Training History', fontsize=14, fontweight='bold')
     
     epochs = range(1, len(history['train_loss']) + 1)
+    colors = {'train': '#1f77b4', 'val': '#ff7f0e', 'val_macro': '#d62728'}
     
-    # Loss
-    axes[0].plot(epochs, history['train_loss'], 'b-', label='Train')
-    axes[0].plot(epochs, history['val_loss'], 'r-', label='Val')
-    axes[0].set_xlabel('Epoch')
-    axes[0].set_ylabel('Loss')
-    axes[0].set_title('Loss Curve')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+    # 1. Loss Curve
+    ax = axes[0, 0]
+    ax.plot(epochs, history['train_loss'], color=colors['train'], linewidth=1.5, label='Train')
+    ax.plot(epochs, history['val_loss'], color=colors['val'], linewidth=1.5, label='Val')
+    ax.set_xlabel('Epoch', fontsize=10)
+    ax.set_ylabel('Loss', fontsize=10)
+    ax.set_title('Loss', fontsize=11, fontweight='bold')
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(1, len(epochs))
     
-    # Accuracy
-    axes[1].plot(epochs, history['train_acc'], 'b-', label='Train')
-    axes[1].plot(epochs, history['val_acc'], 'r-', label='Val')
-    axes[1].set_xlabel('Epoch')
-    axes[1].set_ylabel('Accuracy')
-    axes[1].set_title('Accuracy Curve')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+    # 2. Accuracy Curve
+    ax = axes[0, 1]
+    ax.plot(epochs, history['train_acc'], color=colors['train'], linewidth=1.5, label='Train')
+    ax.plot(epochs, history['val_acc'], color=colors['val'], linewidth=1.5, label='Val')
+    ax.set_xlabel('Epoch', fontsize=10)
+    ax.set_ylabel('Accuracy', fontsize=10)
+    ax.set_title('Accuracy', fontsize=11, fontweight='bold')
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(1, len(epochs))
+    ax.set_ylim(0, 1)
     
-    # F1
-    axes[2].plot(epochs, history['train_f1'], 'b-', label='Train')
-    axes[2].plot(epochs, history['val_f1'], 'r-', label='Val')
-    axes[2].set_xlabel('Epoch')
-    axes[2].set_ylabel('F1 Score')
-    axes[2].set_title('F1 Curve')
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
+    # 3. F1 (Weighted) Curve
+    ax = axes[1, 0]
+    ax.plot(epochs, history['train_f1'], color=colors['train'], linewidth=1.5, label='Train')
+    ax.plot(epochs, history['val_f1'], color=colors['val'], linewidth=1.5, label='Val')
+    ax.set_xlabel('Epoch', fontsize=10)
+    ax.set_ylabel('F1 Score (Weighted)', fontsize=10)
+    ax.set_title('F1 Score (Weighted)', fontsize=11, fontweight='bold')
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(1, len(epochs))
+    ax.set_ylim(0, 1)
+    
+    # 4. F1 (Macro) Curve - 最重要的指标
+    ax = axes[1, 1]
+    ax.plot(epochs, history['train_f1_macro'], color=colors['train'], linewidth=1.5, label='Train')
+    ax.plot(epochs, history['val_f1_macro'], color=colors['val'], linewidth=2, label='Val (Weighted)')
+    ax.plot(epochs, history['val_f1_macro'], color=colors['val_macro'], linewidth=1.5, 
+            linestyle='--', label='Val (Macro)')
+    
+    # 标记最佳epoch
+    if 'val_f1_macro' in history and len(history['val_f1_macro']) > 0:
+        best_epoch = np.argmax(history['val_f1_macro']) + 1
+        best_f1 = max(history['val_f1_macro'])
+        ax.axvline(x=best_epoch, color='green', linestyle=':', alpha=0.7, label=f'Best ({best_epoch})')
+        ax.scatter([best_epoch], [best_f1], color='green', s=100, zorder=5, marker='*')
+        ax.annotate(f'{best_f1:.3f}', xy=(best_epoch, best_f1), 
+                   xytext=(best_epoch+2, best_f1+0.05), fontsize=9, color='green')
+    
+    ax.set_xlabel('Epoch', fontsize=10)
+    ax.set_ylabel('F1 Score', fontsize=10)
+    ax.set_title(f'F1 Score (Macro) - Early Stop Metric', fontsize=11, fontweight='bold', color='darkred')
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(1, len(epochs))
+    ax.set_ylim(0, 1)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -458,7 +492,8 @@ def main():
         json.dump(history, f, indent=2)
     
     # 绘制并保存训练曲线
-    plot_training_curves(history, output_dir / 'training_curves.png')
+    best_epoch = np.argmax(history[f'val_{early_stop_metric}']) + 1 if history[f'val_{early_stop_metric}'] else 0
+    plot_training_curves(history, output_dir / 'training_curves.png', best_epoch, early_stop_metric)
     
     logger.info(f"\n训练完成! 结果保存在: {output_dir}")
     logger.info("产出文件:")
