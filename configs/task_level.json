@@ -33,8 +33,8 @@
     "patience": 15,
     "train_val_split": 0.9,
     "use_class_weights": true,
-    "class_weights_mode": "auto",
-    "class_weights": [2.5, 0.5, 2.5]
+    "class_weights_mode": "manual",
+    "class_weights": [10.0, 1.0, 10.0]
   },
   "data": {
     "processed_data_path": "data/processed/processed_data.pkl"

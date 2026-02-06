@@ -346,9 +346,10 @@ def main():
     }
     
     logger.info("开始训练...")
-    print("\n" + "="*80)
-    print(f"{'Epoch':<8} {'Train Loss':<12} {'Train Acc':<12} {'Train F1':<12} {'Val Loss':<12} {'Val Acc':<12} {'Val F1':<12}")
-    print("="*80)
+    print("\n" + "="*85)
+    print(f"{'Epoch':<6} {'Train':<28} {'Val':<28}")
+    print(f"       {'Loss':<8}{'Acc':<8}{'F1w|mac':<12} {'Loss':<8}{'Acc':<8}{'F1w|mac':<12}")
+    print("="*85)
     
     for epoch in range(1, config['training']['epochs'] + 1):
         # 训练
@@ -365,9 +366,10 @@ def main():
         history['val_acc'].append(val_metrics['accuracy'])
         history['val_f1'].append(val_metrics['f1'])
         
-        # 打印一行结果
-        print(f"{epoch:<8} {train_metrics['loss']:<12.4f} {train_metrics['accuracy']:<12.4f} {train_metrics['f1']:<12.4f} "
-              f"{val_metrics['loss']:<12.4f} {val_metrics['accuracy']:<12.4f} {val_metrics['f1']:<12.4f}")
+        # 打印一行结果 (同时显示Weighted F1和Macro F1)
+        print(f"{epoch:<6} "
+              f"{train_metrics['loss']:<8.4f} {train_metrics['accuracy']:<8.4f} {train_metrics['f1_weighted']:<8.4f}|{train_metrics['f1_macro']:<8.4f}  "
+              f"{val_metrics['loss']:<8.4f} {val_metrics['accuracy']:<8.4f} {val_metrics['f1_weighted']:<8.4f}|{val_metrics['f1_macro']:<8.4f}")
         
         # 学习率调整
         trainer.scheduler.step(val_metrics['loss'])
@@ -382,10 +384,10 @@ def main():
         else:
             patience_counter += 1
             if patience_counter >= config['training']['patience']:
-                print(f"\n早停! {config['training']['patience']}个epoch没有改善 (Best Val F1: {best_val_f1:.4f})")
+                print(f"\n早停! {config['training']['patience']}个epoch没有改善 (Best Val F1w: {best_val_f1:.4f})")
                 break
     
-    print("="*80)
+    print("="*85)
     
     # 加载最佳模型进行测试
     print("\n加载最佳模型进行测试...")
@@ -398,20 +400,20 @@ def main():
         ("Test3 (新被试+新题)", test3_loader),
     ]
     
-    print("\n" + "="*70)
+    print("\n" + "="*85)
     print("测试结果汇总")
-    print("="*70)
-    print(f"{'数据集':<25} {'Loss':<10} {'Acc':<10} {'F1':<10}")
-    print("-"*70)
+    print("="*85)
+    print(f"{'数据集':<25} {'Loss':<10} {'Acc':<10} {'F1(Weighted)':<15} {'F1(Macro)':<12}")
+    print("-"*85)
     
     all_test_results = {}
     
     for name, loader in test_sets:
         metrics = trainer.evaluate(loader, desc=name)
         all_test_results[name] = metrics
-        print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1']:<10.4f}")
+        print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1_weighted']:<15.4f} {metrics['f1_macro']:<12.4f}")
     
-    print("="*70)
+    print("="*85)
     
     # 详细评估报告
     for name, metrics in all_test_results.items():
@@ -433,7 +435,8 @@ def main():
         test_results[name] = {
             'loss': metrics['loss'],
             'accuracy': metrics['accuracy'],
-            'f1': metrics['f1'],
+            'f1_weighted': metrics['f1_weighted'],
+            'f1_macro': metrics['f1_macro'],
             'predictions': [int(p) for p in metrics['predictions']],
             'labels': [int(l) for l in metrics['labels']],
         }

@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, precision_score, recall_score
 
 from src.models.task_level_model import TaskLevelEncoder
 
@@ -90,9 +90,18 @@ class TaskLevelTrainer:
         
         avg_loss = total_loss / len(dataloader)
         accuracy = (np.array(all_preds) == np.array(all_labels)).mean()
-        f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
         
-        return {'loss': avg_loss, 'accuracy': accuracy, 'f1': f1}
+        # 同时计算Weighted F1和Macro F1
+        f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+        
+        return {
+            'loss': avg_loss,
+            'accuracy': accuracy,
+            'f1': f1_weighted,           # 保持兼容
+            'f1_weighted': f1_weighted,  # 显式命名
+            'f1_macro': f1_macro,        # 新增
+        }
 
     @torch.no_grad()
     def evaluate(self, dataloader: DataLoader, desc: str = "Eval") -> Dict[str, float]:
@@ -118,12 +127,17 @@ class TaskLevelTrainer:
         
         avg_loss = total_loss / len(dataloader)
         accuracy = (np.array(all_preds) == np.array(all_labels)).mean()
-        f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        
+        # 同时计算Weighted F1和Macro F1
+        f1_weighted = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        f1_macro = f1_score(all_labels, all_preds, average='macro', zero_division=0)
         
         return {
             'loss': avg_loss,
             'accuracy': accuracy,
-            'f1': f1,
+            'f1': f1_weighted,
+            'f1_weighted': f1_weighted,
+            'f1_macro': f1_macro,
             'predictions': all_preds,
             'labels': all_labels,
         }
