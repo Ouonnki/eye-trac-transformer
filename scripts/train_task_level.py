@@ -249,12 +249,23 @@ def main():
     logger.info(f"测试集2:  {test2_s}被试 × {test2_t}题 = {test2_n}样本 (旧被试+新题)")
     logger.info(f"测试集3:  {test3_s}被试 × {test3_t}题 = {test3_n}样本 (新被试+新题)")
     
-    # 计算类别权重（基于训练集）
+    # 计算/配置类别权重
     train_labels = [dataset.samples[i]['label'] for i in train_indices]
-    class_weights = compute_class_weights(np.array(train_labels))
     train_dist = np.bincount(train_labels, minlength=3)
     logger.info(f"训练集类别分布: {train_dist}")
-    logger.info(f"类别权重: {class_weights}")
+    
+    if config['training']['use_class_weights']:
+        if config['training'].get('class_weights_mode', 'auto') == 'manual':
+            # 手动配置权重
+            class_weights = torch.tensor(config['training']['class_weights'], dtype=torch.float32)
+            logger.info(f"使用手动类别权重: {class_weights}")
+        else:
+            # 自动计算权重
+            class_weights = compute_class_weights(np.array(train_labels))
+            logger.info(f"使用自动计算类别权重: {class_weights}")
+    else:
+        class_weights = None
+        logger.info("不使用类别权重")
     logger.info(f"类别权重: {class_weights}")
     
     # 创建DataLoader
