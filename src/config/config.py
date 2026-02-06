@@ -101,17 +101,6 @@ class OutputConfig:
 
 
 @dataclass
-class DistillConfig:
-    """知识蒸馏配置"""
-    enable: bool = False
-    teacher_model_path: str = ''
-    teacher_config_path: str = ''
-    temperature: float = 1.0
-    alpha: float = 0.5
-    aggregation: Literal['mean'] = 'mean'
-
-
-@dataclass
 class CADTConfig:
     """CADT域适应配置（仅CADT模型使用）"""
     target_domain: Literal['test1', 'test2', 'test3'] = 'test1'
@@ -137,7 +126,6 @@ class UnifiedConfig:
     cadt: CADTConfig = field(default_factory=CADTConfig)
     device: DeviceConfig = field(default_factory=DeviceConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
-    distill: DistillConfig = field(default_factory=DistillConfig)
 
     @classmethod
     def from_json(cls, path: str) -> 'UnifiedConfig':
@@ -158,7 +146,6 @@ class UnifiedConfig:
             cadt=CADTConfig(**data.get('cadt', {})),
             device=DeviceConfig(**data.get('device', {})),
             output=OutputConfig(**data.get('output', {})),
-            distill=DistillConfig(**data.get('distill', {})),
         )
 
     def to_json(self, path: str) -> None:

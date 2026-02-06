@@ -14,7 +14,6 @@ from .config import (
     DeviceConfig,
     OutputConfig,
     CADTConfig,
-    DistillConfig,
 )
 
 __all__ = [
@@ -26,5 +25,4 @@ __all__ = [
     'DeviceConfig',
     'OutputConfig',
     'CADTConfig',
-    'DistillConfig',
 ]

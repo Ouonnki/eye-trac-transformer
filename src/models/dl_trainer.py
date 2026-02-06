@@ -34,7 +34,6 @@ except ImportError:
     HAS_MATPLOTLIB = False
 
 from src.models.dl_models import HierarchicalTransformerNetwork
-from src.models.segment_model import SegmentEncoder
 from src.models.dl_dataset import HierarchicalGazeDataset, collate_fn, SequenceConfig
 from src.config import UnifiedConfig
 
@@ -166,9 +165,6 @@ class DeepLearningTrainer:
         self.optimizer = None
         self.scheduler = None
 
-        # 蒸馏教师模型（可选）
-        self.teacher_model = None
-
         # 训练历史（根据任务类型初始化）
         self._init_history()
 
@@ -236,37 +232,6 @@ class DeepLearningTrainer:
             self.config.training.epochs,
         )
         return optimizer, scheduler
-
-    def _load_teacher_model(self) -> None:
-        """加载蒸馏教师模型（片段模型）"""
-        if not self.config.distill.enable:
-            return
-
-        if not self.config.distill.teacher_model_path or not self.config.distill.teacher_config_path:
-            raise ValueError('蒸馏开启但未提供 teacher_model_path 或 teacher_config_path')
-
-        logger.info(
-            f'蒸馏开启：加载教师模型 {self.config.distill.teacher_model_path} '
-            f'与配置 {self.config.distill.teacher_config_path}'
-        )
-        teacher_config = UnifiedConfig.from_json(self.config.distill.teacher_config_path)
-        num_classes = teacher_config.task.num_classes if teacher_config.task.type == 'classification' else 1
-
-        teacher_model = SegmentEncoder.from_config(
-            config=teacher_config,
-            seq_config=self.seq_config,
-            num_classes=num_classes,
-            use_task_embedding=getattr(teacher_config.model, 'use_task_embedding', False),
-        )
-        teacher_model = teacher_model.to(self.device)
-        teacher_model.eval()
-
-        checkpoint = torch.load(self.config.distill.teacher_model_path, map_location=self.device, weights_only=False)
-        teacher_model.load_state_dict(checkpoint['model_state_dict'])
-
-        logger.info('教师模型加载完成，蒸馏已启用')
-
-        self.teacher_model = teacher_model
 
     def plot_training_curves(self, save_path: Optional[str] = None, fold: int = 0) -> Optional[str]:
         """
@@ -463,10 +428,10 @@ class DeepLearningTrainer:
         current_lr = self.history['learning_rate'][-1]
 
         # 打印表头
-        print(f'\n{Fore.CYAN}{'═' * 70}{Style.RESET_ALL}')
+        print(f'\n{Fore.CYAN}{"═" * 70}{Style.RESET_ALL}')
         print(f'{Fore.CYAN}║{Style.RESET_ALL}  {Fore.YELLOW}Epoch {epoch:3d} 训练汇总{Style.RESET_ALL}  '
               f'{Fore.CYAN}║{Style.RESET_ALL}')
-        print(f'{Fore.CYAN}{'═' * 70}{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}{"═" * 70}{Style.RESET_ALL}')
 
         # 训练损失
         train_change = self._format_metric_change(current_train_loss, initial_train_loss, higher_is_better=False)
@@ -502,26 +467,26 @@ class DeepLearningTrainer:
             best_mark = ''
         print(f'  最佳模型: {Fore.GREEN}{best_val_loss:.4f}{Style.RESET_ALL} @ Epoch {best_epoch}{best_mark}')
 
-        print(f'{Fore.CYAN}{'═' * 70}{Style.RESET_ALL}\n')
+        print(f'{Fore.CYAN}{"═" * 70}{Style.RESET_ALL}\n')
 
     def _print_training_start(self, fold: int, total_epochs: int, train_samples: int, val_samples: int) -> None:
         """打印训练开始信息"""
         task_label = f'{Fore.YELLOW}分类{Style.RESET_ALL}' if self.config.task.type == 'classification' else f'{Fore.YELLOW}回归{Style.RESET_ALL}'
-        print(f'\n{Fore.CYAN}╔{'═' * 68}╗{Style.RESET_ALL}')
+        print(f'\n{Fore.CYAN}╔{"═" * 68}╗{Style.RESET_ALL}')
         print(f'{Fore.CYAN}║{Style.RESET_ALL}  {Fore.WHITE}开始训练 Fold {fold + 1} - {task_label}任务{Style.RESET_ALL}  '
               f'{Fore.CYAN}║{Style.RESET_ALL}')
-        print(f'{Fore.CYAN}╠{'═' * 68}╣{Style.RESET_ALL}')
+        print(f'{Fore.CYAN}╠{"═" * 68}╣{Style.RESET_ALL}')
         print(f'{Fore.CYAN}║{Style.RESET_ALL}  训练样本: {train_samples:4d}  '
               f'验证样本: {val_samples:4d}  '
               f'总轮数: {total_epochs:3d}  {Fore.CYAN}║{Style.RESET_ALL}')
-        print(f'{Fore.CYAN}╚{'═' * 68}╝{Style.RESET_ALL}\n')
+        print(f'{Fore.CYAN}╚{"═" * 68}╝{Style.RESET_ALL}\n')
 
     def _print_early_stop(self, epoch: int, patience: int, best_epoch: int, best_score: float) -> None:
         """打印早停信息"""
-        print(f'\n{Fore.YELLOW}{'─' * 50}{Style.RESET_ALL}')
+        print(f'\n{Fore.YELLOW}{"─" * 50}{Style.RESET_ALL}')
         print(f'  {Fore.YELLOW}⚠ 早停触发 @ Epoch {epoch}{Style.RESET_ALL} (patience={patience})')
         print(f'  {Fore.GREEN}✓ 最佳模型 @ Epoch {best_epoch} | val_loss={best_score:.4f}{Style.RESET_ALL}')
-        print(f'{Fore.YELLOW}{'─' * 50}{Style.RESET_ALL}\n')
+        print(f'{Fore.YELLOW}{"─" * 50}{Style.RESET_ALL}\n')
 
     def train_epoch(
         self,
@@ -559,7 +524,7 @@ class DeepLearningTrainer:
 
             # 混合精度前向传播
             if self.use_amp:
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     outputs = model(
                         segments=segments,
                         segment_mask=segment_mask,
@@ -568,15 +533,6 @@ class DeepLearningTrainer:
                         task_conditions=task_conditions,
                     )
                     loss = criterion(outputs['prediction'], labels)
-                    if self.config.distill.enable and self.teacher_model is not None:
-                        kd_loss = self._compute_kd_loss(
-                            outputs['prediction'],
-                            segments,
-                            segment_lengths,
-                            segment_mask,
-                            task_conditions,
-                        )
-                        loss = (1 - self.config.distill.alpha) * loss + self.config.distill.alpha * kd_loss
 
                 # 混合精度反向传播
                 self.scaler.scale(loss).backward()
@@ -598,15 +554,6 @@ class DeepLearningTrainer:
                     task_conditions=task_conditions,
                 )
                 loss = criterion(outputs['prediction'], labels)
-                if self.config.distill.enable and self.teacher_model is not None:
-                    kd_loss = self._compute_kd_loss(
-                        outputs['prediction'],
-                        segments,
-                        segment_lengths,
-                        segment_mask,
-                        task_conditions,
-                    )
-                    loss = (1 - self.config.distill.alpha) * loss + self.config.distill.alpha * kd_loss
 
                 # 反向传播
                 loss.backward()
@@ -621,73 +568,6 @@ class DeepLearningTrainer:
             num_batches += 1
 
         return total_loss / num_batches
-
-    def _compute_kd_loss(
-        self,
-        student_logits: torch.Tensor,
-        segments: torch.Tensor,
-        segment_lengths: torch.Tensor,
-        segment_mask: torch.Tensor,
-        task_conditions: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        """计算蒸馏损失（片段教师 -> 被试级学生）"""
-        # 仅分类任务支持蒸馏
-        if self.config.task.type != 'classification':
-            return torch.tensor(0.0, device=student_logits.device)
-
-        if self.teacher_model is None:
-            return torch.tensor(0.0, device=student_logits.device)
-
-        batch_size, max_tasks, max_segments, max_seq_len, feat_dim = segments.shape
-
-        flat_segments = segments.view(-1, max_seq_len, feat_dim)
-        flat_lengths = segment_lengths.view(-1)
-        flat_mask = segment_mask.view(-1)
-
-        valid = flat_mask & (flat_lengths > 0)
-        if not torch.any(valid):
-            return torch.tensor(0.0, device=student_logits.device)
-
-        seg_inputs = flat_segments[valid]
-        seg_lengths = flat_lengths[valid]
-
-        teacher_task_conditions = None
-        if task_conditions is not None:
-            expanded = task_conditions.unsqueeze(2).expand(-1, -1, max_segments, -1)
-            flat_tc = expanded.reshape(batch_size * max_tasks * max_segments, -1)
-            flat_tc = flat_tc[valid]
-            teacher_task_conditions = {
-                'grid_scale': flat_tc[:, 0],
-                'continuous_thinking': flat_tc[:, 1],
-                'click_disappear': flat_tc[:, 2],
-                'has_distractor': flat_tc[:, 3],
-                'has_task_distractor': flat_tc[:, 4],
-            }
-
-        with torch.no_grad():
-            teacher_logits = self.teacher_model(seg_inputs, seg_lengths, task_conditions=teacher_task_conditions)
-
-        t = self.config.distill.temperature
-        teacher_probs = torch.softmax(teacher_logits / t, dim=-1)
-
-        # 聚合到被试级（按平均）
-        # 生成 valid 索引的被试 id
-        seg_indices = torch.nonzero(valid, as_tuple=False).squeeze(1)
-        subj_ids = (seg_indices // (max_tasks * max_segments)).long()
-
-        num_classes = teacher_probs.size(-1)
-        agg = torch.zeros((batch_size, num_classes), device=teacher_probs.device)
-        counts = torch.zeros((batch_size, 1), device=teacher_probs.device)
-
-        agg.index_add_(0, subj_ids, teacher_probs)
-        counts.index_add_(0, subj_ids, torch.ones_like(subj_ids, dtype=agg.dtype).unsqueeze(1))
-
-        teacher_subj_probs = agg / counts.clamp_min(1.0)
-
-        # KLDivLoss expects log-probabilities for input
-        log_student = torch.log_softmax(student_logits / t, dim=-1)
-        kd_loss = nn.KLDivLoss(reduction='batchmean')(log_student, teacher_subj_probs) * (t ** 2)
-        return kd_loss
 
     def validate(
         self,
@@ -795,10 +675,6 @@ class DeepLearningTrainer:
         self.model = self._create_model()
         self.optimizer, self.scheduler = self._create_optimizer(self.model)
 
-        # 加载教师模型（如启用蒸馏）
-        if self.config.distill.enable:
-            self._load_teacher_model()
-
         # 创建数据加载器（支持多进程和锁页内存）
         loader_kwargs = {
             'batch_size': self.config.training.batch_size,
@@ -856,9 +732,8 @@ class DeepLearningTrainer:
         # 训练循环
         pbar = tqdm(
             range(self.config.training.epochs),
-            desc=f'{Fore.CYAN}训练中{Style.RESET_ALL}',
-            ncols=100,
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]',
+            desc='训练中',
+            ncols=140,
         )
 
         # 记录初始指标用于阶段性汇总
@@ -900,17 +775,17 @@ class DeepLearningTrainer:
             # 更新进度条（根据任务类型显示不同指标）
             if self.config.task.type == 'classification':
                 postfix_dict = {
-                    'loss': f'{Fore.BLUE}{train_loss:.3f}{Style.RESET_ALL}',
-                    'v_loss': f'{Fore.RED}{val_metrics["loss"]:.3f}{Style.RESET_ALL}',
-                    'Acc': f'{Fore.GREEN}{val_metrics["accuracy"]:.3f}{Style.RESET_ALL}',
-                    'F1': f'{Fore.CYAN}{val_metrics["f1"]:.3f}{Style.RESET_ALL}',
+                    'loss': f'{train_loss:.3f}',
+                    'v_loss': f'{val_metrics["loss"]:.3f}',
+                    'Acc': f'{val_metrics["accuracy"]:.3f}',
+                    'F1': f'{val_metrics["f1"]:.3f}',
                 }
             else:
                 postfix_dict = {
-                    'loss': f'{Fore.BLUE}{train_loss:.3f}{Style.RESET_ALL}',
-                    'v_loss': f'{Fore.RED}{val_metrics["loss"]:.3f}{Style.RESET_ALL}',
-                    'R2': f'{Fore.GREEN}{val_metrics["r2"]:.3f}{Style.RESET_ALL}',
-                    'MAE': f'{Fore.CYAN}{val_metrics["mae"]:.2f}{Style.RESET_ALL}',
+                    'loss': f'{train_loss:.3f}',
+                    'v_loss': f'{val_metrics["loss"]:.3f}',
+                    'R2': f'{val_metrics["r2"]:.3f}',
+                    'MAE': f'{val_metrics["mae"]:.2f}',
                 }
             pbar.set_postfix(postfix_dict)
 
@@ -954,10 +829,10 @@ class DeepLearningTrainer:
                 self.model.load_state_dict(best_model_state)
 
         # 打印训练完成信息
-        print(f'\n{Fore.GREEN}╔{'═' * 68}╗{Style.RESET_ALL}')
+        print(f'\n{Fore.GREEN}╔{"═" * 68}╗{Style.RESET_ALL}')
         print(f'{Fore.GREEN}║{Style.RESET_ALL}  {Fore.WHITE}Fold {fold + 1} 训练完成{Style.RESET_ALL}  '
               f'{Fore.GREEN}║{Style.RESET_ALL}')
-        print(f'{Fore.GREEN}╠{'═' * 68}╣{Style.RESET_ALL}')
+        print(f'{Fore.GREEN}╠{"═" * 68}╣{Style.RESET_ALL}')
 
         if self.config.task.type == 'classification':
             print(f'{Fore.GREEN}║{Style.RESET_ALL}  最佳验证精度: {Fore.YELLOW}{best_metrics.get("accuracy", 0):.4f}{Style.RESET_ALL}  '
@@ -971,7 +846,7 @@ class DeepLearningTrainer:
         print(f'{Fore.GREEN}║{Style.RESET_ALL}  最佳验证损失: {Fore.YELLOW}{best_metrics.get("loss", 0):.4f}{Style.RESET_ALL}  '
               f'@ Epoch {Fore.YELLOW}{best_metrics.get("epoch", 0)}{Style.RESET_ALL}  '
               f'{Fore.GREEN}║{Style.RESET_ALL}')
-        print(f'{Fore.GREEN}╚{'═' * 68}╝{Style.RESET_ALL}\n')
+        print(f'{Fore.GREEN}╚{"═" * 68}╝{Style.RESET_ALL}\n')
 
         # 保存模型（保存不带DataParallel的状态）
         if self.config.output.save_best:
