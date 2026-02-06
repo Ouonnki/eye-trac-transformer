@@ -1,0 +1,40 @@
+{
+  "experiment": {
+    "name": "task_level_classification",
+    "output_dir": "outputs/task_level",
+    "random_seed": 42,
+    "train_subjects": 100,
+    "train_tasks": 20,
+    "n_repeats": 1
+  },
+  "sequence": {
+    "max_seq_len": 300,
+    "max_segments": 25,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "input_dim": 7
+  },
+  "model": {
+    "segment_d_model": 96,
+    "segment_nhead": 4,
+    "segment_num_layers": 4,
+    "attention_dim": 32,
+    "task_embedding_dim": 2,
+    "dropout": 0.5,
+    "num_classes": 3,
+    "use_gradient_checkpointing": false
+  },
+  "training": {
+    "batch_size": 48,
+    "epochs": 100,
+    "lr": 0.0001,
+    "weight_decay": 0.001,
+    "grad_clip": 1.0,
+    "patience": 15,
+    "train_val_split": 0.9,
+    "use_class_weights": true
+  },
+  "data": {
+    "processed_data_path": "data/processed/processed_data.pkl"
+  }
+}
