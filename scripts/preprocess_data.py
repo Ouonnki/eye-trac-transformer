@@ -45,6 +45,38 @@ from src.data.schemas import GazePoint
 from src.segmentation.event_segmenter import AdaptiveSegmenter
 
 
+def load_task_level_labels(data_path: Path) -> Dict[Tuple[str, int], int]:
+    """
+    加载题目级分类标签
+    
+    Returns: {(subject_id, task_id): label_class}  label_class为0-based (0,1,2)
+    """
+    import pandas as pd
+    
+    task_labels = {}
+    excel_path = data_path / '题号1到30_分类结果.xlsx'
+    
+    if not excel_path.exists():
+        raise FileNotFoundError(f"任务级标签文件不存在: {excel_path}")
+    
+    print(f"加载任务级标签: {excel_path}")
+    
+    for task_id in range(1, 31):
+        sheet_name = f'题号{task_id}'
+        try:
+            df = pd.read_excel(excel_path, sheet_name=sheet_name)
+            for _, row in df.iterrows():
+                subject_id = str(int(row['被试编号']))
+                # 将1/2/3转换为0/1/2
+                label = int(row['class_1_2_3']) - 1
+                task_labels[(subject_id, task_id)] = label
+        except Exception as e:
+            print(f"  警告: 读取{sheet_name}失败: {e}")
+            
+    print(f"成功加载任务级标签: {len(task_labels)} 条记录")
+    return task_labels
+
+
 def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, screen_height: int = 1080) -> np.ndarray:
     """
     从眼动点序列提取7维特征
@@ -187,9 +219,10 @@ def process_single_subject(
     preprocessor: GazePreprocessor,
     screen_width: int,
     screen_height: int,
+    task_labels: Dict[Tuple[str, int], int],  # 新增: 任务级标签
 ) -> Optional[Dict]:
     """
-    处理单个被试，返回轻量级数据结构
+    处理单个被试，返回轻量级数据结构（包含任务级标签）
     """
     try:
         subject = loader.load_subject(subject_id)
@@ -197,7 +230,7 @@ def process_single_subject(
         subject_data = {
             'subject_id': subject.subject_id,
             'label': float(subject.total_score),
-            'category': int(subject.category),  # 分类标签 (1/2/3)
+            'category': int(subject.category),  # 被试级分类标签 (1/2/3)
             'tasks': []
         }
 
@@ -223,8 +256,15 @@ def process_single_subject(
             if not segments:
                 continue
 
+            # 获取该任务的任务级标签
+            task_label = task_labels.get((subject_id, trial.task_id), None)
+            if task_label is None:
+                print(f"  警告: 缺少任务级标签 {subject_id}/{trial.task_id}")
+                continue
+
             task_data = {
                 'task_id': trial.task_id,
+                'task_label': task_label,  # 新增: 任务级标签 (0/1/2)
                 'segments': [],
                 # 任务条件（用于任务嵌入）
                 'task_conditions': {
@@ -256,17 +296,17 @@ def process_single_subject(
     return None
 
 
-def process_subject_worker(args: Tuple[str, str, int, int]) -> Optional[Dict]:
+def process_subject_worker(args: Tuple[str, str, int, int, Dict]) -> Optional[Dict]:
     """
     多进程 worker 函数，处理单个被试
 
     Args:
-        args: (subject_id, data_dir, screen_width, screen_height)
+        args: (subject_id, data_dir, screen_width, screen_height, task_labels)
 
     Returns:
         处理后的被试数据字典，失败返回 None
     """
-    subject_id, data_dir, screen_width, screen_height = args
+    subject_id, data_dir, screen_width, screen_height, task_labels = args
 
     # 每个进程创建自己的 loader 和 preprocessor
     loader = GazeDataLoader(data_dir)
@@ -274,7 +314,7 @@ def process_subject_worker(args: Tuple[str, str, int, int]) -> Optional[Dict]:
     loader.load_tasks()
     preprocessor = GazePreprocessor(screen_width=screen_width, screen_height=screen_height)
 
-    return process_single_subject(subject_id, loader, preprocessor, screen_width, screen_height)
+    return process_single_subject(subject_id, loader, preprocessor, screen_width, screen_height, task_labels)
 
 
 def main():
@@ -313,6 +353,10 @@ def main():
 
     subject_ids = loader.get_all_subject_ids()
     print(f"\n找到 {len(subject_ids)} 个被试")
+    
+    # 加载任务级标签
+    print("\n加载任务级标签...")
+    task_labels = load_task_level_labels(Path(args.data_dir))
 
     # 处理被试
     all_data = []
@@ -324,7 +368,7 @@ def main():
         for subject_id in tqdm(subject_ids, desc="处理被试"):
             data = process_single_subject(
                 subject_id, loader, preprocessor,
-                args.screen_width, args.screen_height
+                args.screen_width, args.screen_height, task_labels
             )
             if data is not None:
                 all_data.append(data)
@@ -337,7 +381,7 @@ def main():
     else:
         # 并行处理
         worker_args = [
-            (subject_id, args.data_dir, args.screen_width, args.screen_height)
+            (subject_id, args.data_dir, args.screen_width, args.screen_height, task_labels)
             for subject_id in subject_ids
         ]
 
