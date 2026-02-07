@@ -157,10 +157,14 @@ class GazePreprocessor:
             if timestamp is None:
                 continue
 
-            # 清洗坐标（眼动数据可能超出屏幕范围，不强制裁剪）
+            # 清洗坐标（裁剪到屏幕范围，处理屏幕外的眼动点）
             try:
                 x = float(row[x_col]) if not pd.isna(row[x_col]) else 0.0
                 y = float(row[y_col]) if not pd.isna(row[y_col]) else 0.0
+                
+                # 裁剪到屏幕范围（保留边缘信息但防止极端值）
+                x = max(0.0, min(x, float(self.screen_width)))
+                y = max(0.0, min(y, float(self.screen_height)))
             except (ValueError, TypeError):
                 continue
 

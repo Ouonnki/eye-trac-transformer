@@ -77,7 +77,12 @@ def load_task_level_labels(data_path: Path) -> Dict[Tuple[str, int], int]:
     return task_labels
 
 
-def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, screen_height: int = 1080) -> np.ndarray:
+def extract_features(
+    gaze_points: List[GazePoint], 
+    screen_width: int = 1920, 
+    screen_height: int = 1080,
+    is_first_segment: bool = True
+) -> np.ndarray:
     """
     从眼动点序列提取7维特征
 
@@ -94,6 +99,9 @@ def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, scr
         gaze_points: 眼动点列表
         screen_width: 屏幕宽度
         screen_height: 屏幕高度
+        is_first_segment: 是否是第一个片段（搜索第1个数字）。
+                         如果是第一个片段，第0点设为0（任务刚开始）；
+                         如果不是第一个片段，第0点基于第0-1点计算（从上一个点击位置开始移动）。
 
     Returns:
         (seq_len, 7) 的特征数组
@@ -112,7 +120,40 @@ def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, scr
         features[i, 1] = point.y / screen_height
 
         if i == 0:
-            features[i, 2:7] = 0.0
+            if is_first_segment:
+                # 第一个片段的第0点：任务刚开始，没有历史速度
+                features[i, 2:7] = 0.0
+            else:
+                # 非第一个片段的第0点：从上一个点击位置开始，使用第0-1点计算初始速度
+                # 第0点是起始点击位置，第1点是接下来的眼动点或目标点击
+                if n >= 2:
+                    next_point = gaze_points[1]
+                    
+                    # 计算从第0点到第1点的时间差和速度作为初始值
+                    dt = (next_point.timestamp - point.timestamp).total_seconds() * 1000
+                    dt = max(dt, 1.0)
+                    features[i, 2] = dt
+                    
+                    # 位移
+                    dx = next_point.x - point.x
+                    dy = next_point.y - point.y
+                    distance = math.sqrt(dx**2 + dy**2)
+                    
+                    # 初始速度
+                    velocity = distance / dt
+                    features[i, 3] = velocity
+                    features[i, 4] = 0.0  # 初始加速度设为0（没有历史）
+                    
+                    # 初始方向
+                    direction = math.atan2(dy, dx)
+                    features[i, 5] = direction / math.pi
+                    features[i, 6] = 0.0  # 初始方向变化设为0
+                    
+                    # 更新用于后续计算的 prev 值
+                    prev_velocity = velocity
+                    prev_direction = direction
+                else:
+                    features[i, 2:7] = 0.0
         else:
             prev_point = gaze_points[i - 1]
 
@@ -139,7 +180,8 @@ def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, scr
             features[i, 5] = direction / math.pi
 
             # 方向变化
-            if i > 1:
+            if i > 1 or (not is_first_segment and i == 1):
+                # 对于非第一个片段，第1点也有方向变化（相对于第0点）
                 direction_change = abs(direction - prev_direction)
                 if direction_change > math.pi:
                     direction_change = 2 * math.pi - direction_change
@@ -151,59 +193,75 @@ def extract_features(gaze_points: List[GazePoint], screen_width: int = 1920, scr
     return features
 
 
-def normalize_subject_features(subject_data: Dict) -> Dict:
+def normalize_subject_features(subject_data: Dict, clip_sigma: float = 10.0) -> Dict:
     """
     对单个被试的所有片段进行被试内标准化
 
-    只标准化动态特征（消除个体的速度/时间习惯差异）：
+    标准化动态特征（消除个体的速度/时间习惯差异）：
     - dt, velocity, acceleration: 使用被试内的均值和标准差标准化
 
     保持不变的特征：
     - x, y: 保留原始屏幕归一化值（保留空间信息）
     - direction, direction_change: 已经归一化到 [-1, 1] 和 [0, 1]
 
+    异常值处理：
+    - 使用10倍标准差裁剪，只裁剪极端异常值（如dt=1ms导致的超大速度）
+
     Args:
         subject_data: 单个被试的数据字典
+        clip_sigma: 裁剪阈值（标准差倍数），默认10倍
 
     Returns:
         标准化后的被试数据字典
     """
-    # 收集该被试所有片段的动态特征
+    # 收集该被试所有片段的动态特征（包括第0点，因为非第一片段的第0点也有值）
     all_dt = []
     all_velocity = []
     all_acceleration = []
 
     for task in subject_data['tasks']:
         for segment in task['segments']:
-            if len(segment) > 1:
-                all_dt.extend(segment[1:, 2].tolist())
-                all_velocity.extend(segment[1:, 3].tolist())
-                all_acceleration.extend(segment[1:, 4].tolist())
+            if len(segment) > 0:
+                all_dt.extend(segment[:, 2].tolist())
+                all_velocity.extend(segment[:, 3].tolist())
+                all_acceleration.extend(segment[:, 4].tolist())
+
+    if not all_dt:
+        return subject_data
 
     # 计算该被试的统计量
     eps = 1e-8
 
-    dt_mean = np.mean(all_dt) if all_dt else 0.0
-    dt_std = np.std(all_dt) + eps if all_dt else 1.0
-    velocity_mean = np.mean(all_velocity) if all_velocity else 0.0
-    velocity_std = np.std(all_velocity) + eps if all_velocity else 1.0
-    acceleration_mean = np.mean(all_acceleration) if all_acceleration else 0.0
-    acceleration_std = np.std(all_acceleration) + eps if all_acceleration else 1.0
+    dt_mean = np.mean(all_dt)
+    dt_std = np.std(all_dt) + eps
+    velocity_mean = np.mean(all_velocity)
+    velocity_std = np.std(all_velocity) + eps
+    acceleration_mean = np.mean(all_acceleration)
+    acceleration_std = np.std(all_acceleration) + eps
 
     # 应用标准化到所有片段（只标准化动态特征）
     for task in subject_data['tasks']:
         for i, segment in enumerate(task['segments']):
-            if len(segment) > 1:
+            if len(segment) > 0:
                 normalized = segment.copy()
 
                 # 只标准化 dt, velocity, acceleration（保留 x, y 不变）
-                normalized[1:, 2] = (segment[1:, 2] - dt_mean) / dt_std
-                normalized[1:, 3] = (segment[1:, 3] - velocity_mean) / velocity_std
-                normalized[1:, 4] = (segment[1:, 4] - acceleration_mean) / acceleration_std
+                normalized[:, 2] = (segment[:, 2] - dt_mean) / dt_std
+                normalized[:, 3] = (segment[:, 3] - velocity_mean) / velocity_std
+                normalized[:, 4] = (segment[:, 4] - acceleration_mean) / acceleration_std
+
+                # 极端异常值裁剪（防止dt=1ms等导致的极端值破坏训练）
+                normalized[:, 2] = np.clip(normalized[:, 2], -clip_sigma, clip_sigma)
+                normalized[:, 3] = np.clip(normalized[:, 3], -clip_sigma, clip_sigma)
+                normalized[:, 4] = np.clip(normalized[:, 4], -clip_sigma, clip_sigma)
+
+                # 第一个片段的第0点：任务刚开始，动态特征应为0（在extract_features中设为0，标准化后需恢复）
+                if i == 0:
+                    normalized[0, 2:7] = 0.0
 
                 task['segments'][i] = normalized
 
-    # 保存该被试的归一化统计量（用于调试和分析）
+    # 保存该被试的归一化统计量
     subject_data['normalization_stats'] = {
         'dt_mean': float(dt_mean), 'dt_std': float(dt_std),
         'velocity_mean': float(velocity_mean), 'velocity_std': float(velocity_std),
@@ -278,9 +336,16 @@ def process_single_subject(
                 }
             }
 
-            for segment in segments:
+            for seg_idx, segment in enumerate(segments):
                 # 提取特征并立即转换为numpy
-                features = extract_features(segment.gaze_points, screen_width, screen_height)
+                # 第一个片段（搜索第1个数字）的第0点设为0，其他片段的第0点有初始速度
+                is_first_segment = (seg_idx == 0)
+                features = extract_features(
+                    segment.gaze_points, 
+                    screen_width, 
+                    screen_height,
+                    is_first_segment=is_first_segment
+                )
                 if len(features) > 0:
                     task_data['segments'].append(features)
 

@@ -20,24 +20,32 @@
     "segment_num_layers": 4,
     "attention_dim": 32,
     "task_embedding_dim": 2,
-    "dropout": 0.3,
+    "dropout": 0.1,
     "num_classes": 3,
     "use_gradient_checkpointing": false
   },
   "training": {
     "batch_size": 100,
     "epochs": 400,
-    "lr": 0.00008,
+    "lr": 8e-05,
     "weight_decay": 0.0005,
     "grad_clip": 1.0,
-    "patience": 100,
+    "patience": 40,
     "early_stop_metric": "f1_macro",
     "train_val_split": 0.9,
-    "use_class_weights": false,
+    "use_class_weights": true,
     "class_weights_mode": "auto",
-    "class_weights": [3.0, 0.5, 3.5],
+    "class_weights": [
+      2.4793,
+      0.4484,
+      2.0
+    ],
     "use_focal_loss": false,
-    "focal_loss_alpha": [0.25, 0.25, 0.25],
+    "focal_loss_alpha": [
+      0.25,
+      0.25,
+      0.25
+    ],
     "focal_loss_gamma": 2.0,
     "use_balanced_sampler": true,
     "balanced_sampler_mode": "effective_num",
