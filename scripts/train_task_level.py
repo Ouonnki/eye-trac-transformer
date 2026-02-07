@@ -17,6 +17,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from sklearn.metrics import classification_report, confusion_matrix
+from scipy.stats import spearmanr
 
 # 添加项目根目录
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -528,23 +529,31 @@ def main():
     print("\n" + "="*85)
     print("测试结果汇总")
     print("="*85)
-    print(f"{'数据集':<25} {'Loss':<10} {'Acc':<10} {'F1(Weighted)':<15} {'F1(Macro)':<12}")
-    print("-"*85)
+    print(f"{'数据集':<25} {'Loss':<10} {'Acc':<10} {'F1(Weighted)':<15} {'F1(Macro)':<12} {'Spearman':<10}")
+    print("-"*95)
     
     all_test_results = {}
     
     for name, loader in test_sets:
         metrics = trainer.evaluate(loader, desc=name)
+        
+        # 计算 Spearman 等级相关系数
+        spearman_corr, spearman_p = spearmanr(metrics['labels'], metrics['predictions'])
+        metrics['spearman'] = spearman_corr
+        metrics['spearman_p'] = spearman_p
+        
         all_test_results[name] = metrics
-        print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1_weighted']:<15.4f} {metrics['f1_macro']:<12.4f}")
+        print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1_weighted']:<15.4f} {metrics['f1_macro']:<12.4f} {metrics['spearman']:<10.4f}")
     
-    print("="*85)
+    print("="*95)
     
     # 详细评估报告
     for name, metrics in all_test_results.items():
-        print(f"\n{'='*60}")
+        print(f"\n{'='*70}")
         print(f"{name} - 详细报告")
-        print("="*60)
+        print("="*70)
+        print(f"Spearman ρ: {metrics['spearman']:.4f} (p={metrics['spearman_p']:.4e})")
+        print()
         print(classification_report(
             metrics['labels'], 
             metrics['predictions'],
@@ -562,6 +571,8 @@ def main():
             'accuracy': metrics['accuracy'],
             'f1_weighted': metrics['f1_weighted'],
             'f1_macro': metrics['f1_macro'],
+            'spearman': metrics['spearman'],
+            'spearman_p': metrics['spearman_p'],
             'predictions': [int(p) for p in metrics['predictions']],
             'labels': [int(l) for l in metrics['labels']],
         }
