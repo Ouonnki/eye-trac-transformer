@@ -20,6 +20,7 @@
     "segment_num_layers": 4,
     "attention_dim": 32,
     "task_embedding_dim": 2,
+    "use_task_embedding": true,
     "dropout": 0.1,
     "num_classes": 3,
     "use_gradient_checkpointing": false

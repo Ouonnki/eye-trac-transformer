@@ -418,6 +418,8 @@ def main():
     
     # 创建模型
     logger.info("创建模型...")
+    use_task_embedding = config['model'].get('use_task_embedding', True)
+    logger.info(f"使用任务嵌入: {use_task_embedding}")
     model = TaskLevelEncoder(
         input_dim=config['sequence']['input_dim'],
         max_seq_len=config['sequence']['max_seq_len'],
@@ -427,6 +429,7 @@ def main():
         segment_num_layers=config['model']['segment_num_layers'],
         attention_dim=config['model']['attention_dim'],
         task_embedding_dim=config['model']['task_embedding_dim'],
+        use_task_embedding=use_task_embedding,
         dropout=config['model']['dropout'],
         num_classes=config['model']['num_classes'],
     ).to(device)

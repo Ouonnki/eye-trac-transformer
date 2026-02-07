@@ -44,6 +44,7 @@ class TaskLevelEncoder(nn.Module):
         segment_num_layers: int = 4,
         attention_dim: int = 32,
         task_embedding_dim: int = 2,
+        use_task_embedding: bool = True,
         dropout: float = 0.5,
         num_classes: int = 3,
         use_gradient_checkpointing: bool = False,
@@ -52,6 +53,7 @@ class TaskLevelEncoder(nn.Module):
         
         self.max_segments = max_segments
         self.segment_d_model = segment_d_model
+        self.use_task_embedding = use_task_embedding
         
         # 1. 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
@@ -73,12 +75,16 @@ class TaskLevelEncoder(nn.Module):
         )
         
         # 3. 任务嵌入 (dim=2, 输出=10)
-        self.task_embedding = TaskEmbedding(
-            task_embedding_dim=task_embedding_dim,
-        )
-        self.task_emb_output_dim = self.task_embedding.output_dim  # = 10
+        if self.use_task_embedding:
+            self.task_embedding = TaskEmbedding(
+                task_embedding_dim=task_embedding_dim,
+            )
+            self.task_emb_output_dim = self.task_embedding.output_dim  # = 10
+        else:
+            self.task_embedding = None
+            self.task_emb_output_dim = 0
         
-        # 4. 预测头 (96 + 10 = 106 -> 3)
+        # 4. 预测头 (96 + 10 = 106 -> 3, 或 96 -> 3 当不使用任务嵌入时)
         head_input_dim = segment_d_model + self.task_emb_output_dim
         self.prediction_head = PredictionHead(
             input_dim=head_input_dim,
@@ -129,20 +135,23 @@ class TaskLevelEncoder(nn.Module):
         # 2. 聚合25个片段 -> (B, 96)
         task_repr, _ = self.segment_aggregator(segment_reprs, segment_mask)
         
-        # 3. 任务嵌入 -> (B, 10)
-        if task_conditions is not None:
-            task_emb = self.task_embedding(
-                grid_scale=task_conditions[:, 0].long(),
-                continuous_thinking=task_conditions[:, 1].long(),
-                click_disappear=task_conditions[:, 2].long(),
-                has_distractor=task_conditions[:, 3].long(),
-                has_task_distractor=task_conditions[:, 4].long(),
-            )
+        # 3. 任务嵌入 -> (B, 10) 或空
+        if self.use_task_embedding:
+            if task_conditions is not None:
+                task_emb = self.task_embedding(
+                    grid_scale=task_conditions[:, 0].long(),
+                    continuous_thinking=task_conditions[:, 1].long(),
+                    click_disappear=task_conditions[:, 2].long(),
+                    has_distractor=task_conditions[:, 3].long(),
+                    has_task_distractor=task_conditions[:, 4].long(),
+                )
+            else:
+                task_emb = torch.zeros(B, self.task_emb_output_dim, device=segments.device)
+            # 4. 拼接 -> (B, 106)
+            fused = torch.cat([task_repr, task_emb], dim=-1)
         else:
-            task_emb = torch.zeros(B, self.task_emb_output_dim, device=segments.device)
-        
-        # 4. 拼接 -> (B, 106)
-        fused = torch.cat([task_repr, task_emb], dim=-1)
+            # 不使用任务嵌入，直接使用任务表示
+            fused = task_repr
         
         # 5. 预测 -> (B, 3)
         logits = self.prediction_head(fused)
