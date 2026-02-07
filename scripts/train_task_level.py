@@ -361,6 +361,10 @@ def main():
     logger.info(f"总参数量: {total_params:,}, 可训练: {trainable_params:,}")
     
     # 创建训练器
+    use_focal_loss = config['training'].get('use_focal_loss', False)
+    focal_loss_alpha = config['training'].get('focal_loss_alpha', None)
+    focal_loss_gamma = config['training'].get('focal_loss_gamma', 2.0)
+    
     trainer = TaskLevelTrainer(
         model=model,
         device=device,
@@ -369,6 +373,9 @@ def main():
         lr=config['training']['lr'],
         weight_decay=config['training']['weight_decay'],
         grad_clip=config['training']['grad_clip'],
+        use_focal_loss=use_focal_loss,
+        focal_loss_alpha=focal_loss_alpha,
+        focal_loss_gamma=focal_loss_gamma,
     )
     
     # 训练循环

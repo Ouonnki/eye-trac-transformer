@@ -14,6 +14,7 @@ import numpy as np
 from sklearn.metrics import f1_score, precision_score, recall_score
 
 from src.models.task_level_model import TaskLevelEncoder
+from src.models.losses import FocalLoss, WeightedFocalLoss
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +31,34 @@ class TaskLevelTrainer:
         lr: float = 1e-4,
         weight_decay: float = 0.001,
         grad_clip: float = 1.0,
+        use_focal_loss: bool = False,
+        focal_loss_alpha: Optional[List[float]] = None,
+        focal_loss_gamma: float = 2.0,
     ):
         self.model = model
         self.device = device
         self.grad_clip = grad_clip
         
         # 损失函数
-        if class_weights is not None:
+        if use_focal_loss:
+            # 使用 Focal Loss
+            if focal_loss_alpha is not None:
+                alpha_tensor = torch.tensor(focal_loss_alpha, dtype=torch.float32)
+            else:
+                alpha_tensor = None
+            
+            self.criterion = FocalLoss(
+                alpha=alpha_tensor,
+                gamma=focal_loss_gamma,
+                reduction='mean'
+            )
+            logger.info(f"使用 Focal Loss (gamma={focal_loss_gamma}, alpha={focal_loss_alpha})")
+        elif class_weights is not None:
             self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+            logger.info(f"使用带权重的 CrossEntropyLoss")
         else:
             self.criterion = nn.CrossEntropyLoss()
+            logger.info(f"使用标准 CrossEntropyLoss")
         
         # 优化器
         self.optimizer = torch.optim.AdamW(
