@@ -352,8 +352,9 @@ def main():
         sampler_mode = config['training'].get('balanced_sampler_mode', 'effective_num')
         sampler_beta = config['training'].get('balanced_sampler_beta', 0.999)
         
+        train_labels_arr = np.array(train_labels)
         sample_weights = compute_sample_weights(
-            np.array(train_labels),
+            train_labels_arr,
             mode=sampler_mode,
             beta=sampler_beta
         )
@@ -363,9 +364,9 @@ def main():
             replacement=True
         )
         logger.info(f"使用平衡采样 (mode={sampler_mode}, beta={sampler_beta})")
-        logger.info(f"采样权重分布: 类别0={sample_weights[train_labels==0].mean():.4f}, "
-                   f"类别1={sample_weights[train_labels==1].mean():.4f}, "
-                   f"类别2={sample_weights[train_labels==2].mean():.4f}")
+        logger.info(f"采样权重分布: 类别0={sample_weights[train_labels_arr==0].mean():.4f}, "
+                   f"类别1={sample_weights[train_labels_arr==1].mean():.4f}, "
+                   f"类别2={sample_weights[train_labels_arr==2].mean():.4f}")
         
         train_loader = DataLoader(
             train_dataset,
@@ -439,6 +440,8 @@ def main():
     focal_loss_alpha = config['training'].get('focal_loss_alpha', None)
     focal_loss_gamma = config['training'].get('focal_loss_gamma', 2.0)
     
+    label_smoothing = config['training'].get('label_smoothing', 0.0)
+    
     trainer = TaskLevelTrainer(
         model=model,
         device=device,
@@ -450,6 +453,7 @@ def main():
         use_focal_loss=use_focal_loss,
         focal_loss_alpha=focal_loss_alpha,
         focal_loss_gamma=focal_loss_gamma,
+        label_smoothing=label_smoothing,
     )
     
     # 训练循环

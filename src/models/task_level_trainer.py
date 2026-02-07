@@ -34,6 +34,7 @@ class TaskLevelTrainer:
         use_focal_loss: bool = False,
         focal_loss_alpha: Optional[List[float]] = None,
         focal_loss_gamma: float = 2.0,
+        label_smoothing: float = 0.0,
     ):
         self.model = model
         self.device = device
@@ -41,7 +42,7 @@ class TaskLevelTrainer:
         
         # 损失函数
         if use_focal_loss:
-            # 使用 Focal Loss
+            # 使用 Focal Loss（注意：FocalLoss 不支持 label_smoothing）
             if focal_loss_alpha is not None:
                 alpha_tensor = torch.tensor(focal_loss_alpha, dtype=torch.float32)
             else:
@@ -53,12 +54,17 @@ class TaskLevelTrainer:
                 reduction='mean'
             )
             logger.info(f"使用 Focal Loss (gamma={focal_loss_gamma}, alpha={focal_loss_alpha})")
+            if label_smoothing > 0:
+                logger.warning(f"Focal Loss 不支持 label_smoothing (设置为 {label_smoothing})，已忽略")
         elif class_weights is not None:
-            self.criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
-            logger.info(f"使用带权重的 CrossEntropyLoss")
+            self.criterion = nn.CrossEntropyLoss(
+                weight=class_weights.to(device),
+                label_smoothing=label_smoothing
+            )
+            logger.info(f"使用带权重的 CrossEntropyLoss (label_smoothing={label_smoothing})")
         else:
-            self.criterion = nn.CrossEntropyLoss()
-            logger.info(f"使用标准 CrossEntropyLoss")
+            self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            logger.info(f"使用标准 CrossEntropyLoss (label_smoothing={label_smoothing})")
         
         # 优化器
         self.optimizer = torch.optim.AdamW(
