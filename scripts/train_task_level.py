@@ -15,7 +15,7 @@ from datetime import datetime
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from sklearn.metrics import classification_report, confusion_matrix
 
 # 添加项目根目录
@@ -121,6 +121,47 @@ def compute_class_weights(labels: np.ndarray) -> torch.Tensor:
     total = len(labels)
     weights = total / (len(classes) * counts)
     return torch.tensor(weights, dtype=torch.float32)
+
+
+def compute_sample_weights(labels: np.ndarray, mode: str = "effective_num", beta: float = 0.999) -> np.ndarray:
+    """
+    计算样本采样权重用于平衡采样
+    
+    Args:
+        labels: 样本标签数组
+        mode: 权重计算模式
+            - 'inverse': 简单反比 (1 / count)
+            - 'inverse_sqrt': 反比平方根 (1 / sqrt(count))
+            - 'effective_num': 有效样本数 (论文推荐，默认)
+        beta: effective_num 模式的超参数，越接近1对少数类越友好
+    
+    Returns:
+        每个样本的采样权重
+    """
+    classes, counts = np.unique(labels, return_counts=True)
+    
+    # 计算类别权重
+    if mode == "inverse":
+        # 简单反比
+        class_weights = 1.0 / counts
+    elif mode == "inverse_sqrt":
+        # 反比平方根（比简单反比更温和）
+        class_weights = 1.0 / np.sqrt(counts)
+    elif mode == "effective_num":
+        # 有效样本数 (Class-Balanced Loss 论文)
+        # 公式: (1 - beta) / (1 - beta ^ n_k)
+        effective_num = (1.0 - np.power(beta, counts)) / (1.0 - beta)
+        class_weights = 1.0 / effective_num
+    else:
+        raise ValueError(f"Unknown balanced sampler mode: {mode}")
+    
+    # 归一化类别权重
+    class_weights = class_weights / class_weights.sum() * len(classes)
+    
+    # 为每个样本分配权重
+    sample_weights = np.array([class_weights[int(label)] for label in labels])
+    
+    return sample_weights
 
 
 def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, seed=42):
@@ -303,14 +344,47 @@ def main():
     logger.info(f"类别权重: {class_weights}")
     
     # 创建DataLoader
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['training']['batch_size'],
-        shuffle=True,
-        collate_fn=task_level_collate_fn,
-        num_workers=4,
-        pin_memory=True,
-    )
+    # 检查是否使用平衡采样
+    use_balanced_sampler = config['training'].get('use_balanced_sampler', False)
+    
+    if use_balanced_sampler:
+        # 计算样本采样权重
+        sampler_mode = config['training'].get('balanced_sampler_mode', 'effective_num')
+        sampler_beta = config['training'].get('balanced_sampler_beta', 0.999)
+        
+        sample_weights = compute_sample_weights(
+            np.array(train_labels),
+            mode=sampler_mode,
+            beta=sampler_beta
+        )
+        sampler = WeightedRandomSampler(
+            weights=torch.tensor(sample_weights, dtype=torch.float32),
+            num_samples=len(train_dataset),
+            replacement=True
+        )
+        logger.info(f"使用平衡采样 (mode={sampler_mode}, beta={sampler_beta})")
+        logger.info(f"采样权重分布: 类别0={sample_weights[train_labels==0].mean():.4f}, "
+                   f"类别1={sample_weights[train_labels==1].mean():.4f}, "
+                   f"类别2={sample_weights[train_labels==2].mean():.4f}")
+        
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config['training']['batch_size'],
+            sampler=sampler,
+            collate_fn=task_level_collate_fn,
+            num_workers=4,
+            pin_memory=True,
+        )
+    else:
+        logger.info("不使用平衡采样 (使用随机打乱)")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config['training']['batch_size'],
+            shuffle=True,
+            collate_fn=task_level_collate_fn,
+            num_workers=4,
+            pin_memory=True,
+        )
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['training']['batch_size'],

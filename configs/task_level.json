@@ -9,7 +9,7 @@
   },
   "sequence": {
     "max_seq_len": 300,
-    "max_segments": 25,
+    "max_segments": 3,
     "screen_width": 1920,
     "screen_height": 1080,
     "input_dim": 7
@@ -34,11 +34,14 @@
     "early_stop_metric": "f1_macro",
     "train_val_split": 0.9,
     "use_class_weights": true,
-    "class_weights_mode": "manual",
+    "class_weights_mode": "auto",
     "class_weights": [2.4793, 0.4484, 2.0],
-    "use_focal_loss": true,
+    "use_focal_loss": false,
     "focal_loss_alpha": [0.25, 0.25, 0.25],
-    "focal_loss_gamma": 2.0
+    "focal_loss_gamma": 2.0,
+    "use_balanced_sampler": false,
+    "balanced_sampler_mode": "effective_num",
+    "balanced_sampler_beta": 0.999
   },
   "data": {
     "processed_data_path": "data/processed/processed_data_subject_norm.pkl"
