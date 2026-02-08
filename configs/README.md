@@ -292,3 +292,74 @@ CONFIG=configs/my_config.json python experiments/dl_transformer_experiment.py
 ### 类别不平衡时
 
 设置 `use_class_weights: true`（默认已开启）
+
+---
+
+## 层级-片段联合模型配置
+
+`hierarchical_segment.json` 是专门为 `HierarchicalSegmentTransformerNetwork` 模型设计的配置。
+
+### 特点
+
+- **共享片段编码器**: 层级预测和片段预测共用同一个编码器
+- **双预测头**: 同时输出被试级预测和片段级预测
+- **联合损失**: 加权组合被试级损失和片段级损失
+
+### 新增配置项
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `segment_loss_weight` | float | 0.5 | 片段级损失权重 |
+| `hierarchical_loss_weight` | float | 0.5 | 层级（被试级）损失权重 |
+
+### 使用示例
+
+```bash
+# 使用默认配置训练
+python scripts/train_hierarchical_segment.py --config configs/hierarchical_segment.json
+
+# 调整损失权重
+python scripts/train_hierarchical_segment.py \
+    --config configs/hierarchical_segment.json \
+    --segment-weight 0.3 \
+    --hierarchical-weight 0.7
+
+# 使用交叉验证
+python scripts/train_hierarchical_segment.py \
+    --config configs/hierarchical_segment.json \
+    --cv \
+    --n-splits 5
+```
+
+### 权重调优建议
+
+| 场景 | segment_loss_weight | hierarchical_loss_weight | 说明 |
+|------|---------------------|--------------------------|------|
+| 只关注被试级性能 | 0.0 | 1.0 | 退化为标准层级模型 |
+| 只关注片段级性能 | 1.0 | 0.0 | 退化为片段级模型 |
+| 平衡训练 | 0.5 | 0.5 | 默认配置 |
+| 片段级辅助 | 0.3 | 0.7 | 片段级作为辅助任务 |
+
+### 模型结构
+
+```
+输入眼动序列
+    ↓
+┌─────────────────────────────────────┐
+│      共享片段编码器                  │
+│  (GazeTransformerEncoder)           │
+│       ↓ segment_reprs               │
+└─────────────────────────────────────┘
+    ↓
+    ├──────────────────────┐
+    ↓                      ↓
+┌──────────────┐    ┌──────────────────────────────┐
+│  片段级预测头  │    │      层级预测分支            │
+│(PredictionHead)│   │  • 任务聚合器 (Attention)    │
+│       ↓      │    │  • 任务编码器 (Transformer)  │
+│ segment_preds │    │  • 被试聚合器 (Attention)    │
+└──────────────┘    │  • 被试级预测头              │
+                    │       ↓                      │
+                    │  subject_prediction          │
+                    └──────────────────────────────┘
+```

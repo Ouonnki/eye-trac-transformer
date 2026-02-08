@@ -628,3 +628,116 @@ def segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         result['task_conditions'] = task_conditions
 
     return result
+
+
+class HierarchicalGazeDatasetWithSegmentLabels(HierarchicalGazeDataset):
+    """
+    支持片段级标签的层级眼动数据集
+
+    继承自 HierarchicalGazeDataset，增加了片段级标签支持。
+    每个片段可以有自己的标签，用于片段级监督训练。
+
+    使用场景：
+    - 层级-片段联合模型训练
+    - 需要片段级注释的数据集
+
+    返回格式（在父类基础上增加）：
+    - segment_labels: (max_tasks, max_segments) 片段级标签
+    """
+
+    def __init__(
+        self,
+        subjects: List[SubjectData],
+        config: SequenceConfig,
+        feature_extractor: Optional[SequenceFeatureExtractor] = None,
+        fit_normalizer: bool = False,
+        segment_label_fn: Optional[callable] = None,
+    ):
+        """
+        初始化
+
+        Args:
+            subjects: 被试数据列表
+            config: 序列配置
+            feature_extractor: 特征提取器
+            fit_normalizer: 是否拟合归一化器
+            segment_label_fn: 片段标签生成函数，接收 (subject, trial, segment) 返回标签
+                              如果为 None，则使用被试标签作为所有片段标签
+        """
+        super().__init__(subjects, config, feature_extractor, fit_normalizer=False)
+        self.segment_label_fn = segment_label_fn
+        self.has_segment_labels = segment_label_fn is not None
+
+        # 生成片段级标签
+        self._generate_segment_labels()
+
+        # 如果需要拟合归一化器
+        if fit_normalizer:
+            self._fit_normalizer()
+
+    def _generate_segment_labels(self) -> None:
+        """生成片段级标签"""
+        self.all_segment_labels = []
+
+        for subject_idx, subject in enumerate(self.subjects):
+            subject_segment_labels = []
+
+            for trial_idx, trial in enumerate(subject.trials[:self.config.max_tasks]):
+                task_segment_labels = []
+
+                for segment_idx, segment in enumerate(trial.segments[:self.config.max_segments]):
+                    if self.segment_label_fn is not None:
+                        # 使用自定义标签函数
+                        label = self.segment_label_fn(subject, trial, segment)
+                    else:
+                        # 默认使用被试总分
+                        label = subject.total_score
+                    task_segment_labels.append(label)
+
+                # 填充到 max_segments
+                while len(task_segment_labels) < self.config.max_segments:
+                    task_segment_labels.append(0.0)
+
+                subject_segment_labels.append(task_segment_labels)
+
+            # 填充到 max_tasks
+            while len(subject_segment_labels) < self.config.max_tasks:
+                subject_segment_labels.append([0.0] * self.config.max_segments)
+
+            self.all_segment_labels.append(subject_segment_labels)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """获取样本（包含片段级标签）"""
+        # 获取父类的样本
+        sample = super().__getitem__(idx)
+
+        # 添加片段级标签
+        if self.has_segment_labels:
+            segment_labels = np.array(self.all_segment_labels[idx], dtype=np.float32)
+        else:
+            # 如果没有片段标签函数，使用被试标签填充
+            segment_labels = np.full(
+                (self.config.max_tasks, self.config.max_segments),
+                sample['label'].item(),
+                dtype=np.float32
+            )
+
+        sample['segment_labels'] = torch.from_numpy(segment_labels)
+
+        return sample
+
+
+def hierarchical_segment_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+    """
+    层级-片段联合模型的 DataLoader collate 函数
+
+    在标准 collate_fn 基础上增加 segment_labels 的处理
+    """
+    # 先使用标准 collate_fn
+    result = collate_fn(batch)
+
+    # 处理片段级标签
+    if 'segment_labels' in batch[0]:
+        result['segment_labels'] = torch.stack([b['segment_labels'] for b in batch])
+
+    return result

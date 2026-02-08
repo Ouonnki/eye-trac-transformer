@@ -38,6 +38,7 @@ class SequenceConfigData:
 @dataclass
 class ModelConfig:
     """模型架构配置"""
+    input_dim: int = 7          # 输入特征维度
     segment_d_model: int = 128  # 64 → 128 (序列+任务 concat 后的维度)
     segment_nhead: int = 8     # 4 → 8 (d_model/8)
     segment_num_layers: int = 4
@@ -65,6 +66,10 @@ class TrainingConfig:
     patience: int = 100
     grad_clip: float = 1.0
     label_smoothing: float = 0.1
+
+    # 层级-片段联合模型损失权重
+    segment_loss_weight: float = 0.5      # 片段级损失权重
+    hierarchical_loss_weight: float = 0.5  # 层级（被试级）损失权重
 
 
 @dataclass
