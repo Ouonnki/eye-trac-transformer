@@ -287,7 +287,9 @@ class HierarchicalSegmentTransformerNetwork(BaseModel):
         if self.num_classes == 1:
             subject_prediction = subject_prediction.squeeze(-1)
 
+        # 对齐任务级模型的输出格式，添加 'prediction' 键
         return {
+            'prediction': subject_prediction,  # 对齐任务级模型的输出键名
             'subject_prediction': subject_prediction,
             'segment_predictions': segment_predictions,
             'subject_repr': subject_repr,

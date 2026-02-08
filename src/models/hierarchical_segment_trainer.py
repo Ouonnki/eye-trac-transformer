@@ -162,28 +162,49 @@ class HierarchicalSegmentTrainer:
         self._init_history()
 
     def _init_history(self) -> None:
-        """初始化训练历史"""
+        """
+        初始化训练历史
+
+        对齐任务级模型的键名，同时保持片段级特有键名
+        """
+        # 基础历史（对齐任务级模型）
         base_history = {
+            'train_loss': [],  # 对齐任务级模型，作为 train_total_loss 的别名
+            'val_loss': [],    # 对齐任务级模型，作为 val_total_loss 的别名
+            'learning_rate': [],
+        }
+
+        # 片段级模型特有：详细的损失分解
+        segment_history = {
             'train_total_loss': [],
             'train_subject_loss': [],
             'train_segment_loss': [],
             'val_total_loss': [],
             'val_subject_loss': [],
             'val_segment_loss': [],
-            'learning_rate': [],
         }
 
         if self.config.task.type == 'classification':
+            # 分类任务：对齐 val_accuracy, val_f1
             self.history = {
                 **base_history,
+                **segment_history,
+                'val_accuracy': [],  # 对齐任务级模型（被试级）
+                'val_f1': [],        # 对齐任务级模型（被试级）
+                # 片段级特有
                 'val_subject_accuracy': [],
                 'val_subject_f1': [],
                 'val_segment_accuracy': [],
                 'val_segment_f1': [],
             }
         else:
+            # 回归任务：对齐 val_r2, val_mae
             self.history = {
                 **base_history,
+                **segment_history,
+                'val_r2': [],  # 对齐任务级模型（被试级）
+                'val_mae': [], # 对齐任务级模型（被试级）
+                # 片段级特有
                 'val_subject_r2': [],
                 'val_subject_mae': [],
                 'val_segment_r2': [],
@@ -596,16 +617,25 @@ class HierarchicalSegmentTrainer:
             self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]['lr']
 
-            # 记录历史
+            # 记录历史（对齐任务级模型的键名）
+            # 基础键名（对齐）
+            self.history['train_loss'].append(train_losses['total_loss'])
+            self.history['val_loss'].append(val_metrics['total_loss'])
+            self.history['learning_rate'].append(current_lr)
+
+            # 详细损失分解（片段级模型特有）
             self.history['train_total_loss'].append(train_losses['total_loss'])
             self.history['train_subject_loss'].append(train_losses['subject_loss'])
             self.history['train_segment_loss'].append(train_losses['segment_loss'])
             self.history['val_total_loss'].append(val_metrics['total_loss'])
             self.history['val_subject_loss'].append(val_metrics['subject_loss'])
             self.history['val_segment_loss'].append(val_metrics['segment_loss'])
-            self.history['learning_rate'].append(current_lr)
 
             if self.config.task.type == 'classification':
+                # 被试级指标（对齐任务级模型）
+                self.history['val_accuracy'].append(val_metrics['subject_accuracy'])
+                self.history['val_f1'].append(val_metrics['subject_f1'])
+                # 片段级模型特有
                 self.history['val_subject_accuracy'].append(val_metrics['subject_accuracy'])
                 self.history['val_subject_f1'].append(val_metrics['subject_f1'])
                 self.history['val_segment_accuracy'].append(val_metrics['segment_accuracy'])
@@ -617,6 +647,10 @@ class HierarchicalSegmentTrainer:
                     'seg_acc': f"{val_metrics['segment_accuracy']:.3f}",
                 }
             else:
+                # 被试级指标（对齐任务级模型）
+                self.history['val_r2'].append(val_metrics['subject_r2'])
+                self.history['val_mae'].append(val_metrics['subject_mae'])
+                # 片段级模型特有
                 self.history['val_subject_r2'].append(val_metrics['subject_r2'])
                 self.history['val_subject_mae'].append(val_metrics['subject_mae'])
                 self.history['val_segment_r2'].append(val_metrics['segment_r2'])
@@ -652,6 +686,10 @@ class HierarchicalSegmentTrainer:
             else:
                 self.model.load_state_dict(best_model_state)
 
+        # 保存训练曲线图（对齐任务级模型）
+        if self.config.output.save_figures:
+            self.plot_training_curves(fold=fold)
+
         # 保存模型
         if self.config.output.save_best:
             model_path = os.path.join(self.config.experiment.output_dir, f'model_fold{fold}.pt')
@@ -672,7 +710,7 @@ class HierarchicalSegmentTrainer:
     def predict(
         self,
         dataset: HierarchicalGazeDataset,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
+    ) -> Tuple[np.ndarray, np.ndarray, Dict]:
         """
         预测
 
@@ -680,10 +718,13 @@ class HierarchicalSegmentTrainer:
             dataset: 数据集
 
         Returns:
-            subject_predictions: 被试级预测
-            subject_labels: 被试级标签
-            aggregated_segment_predictions: 从片段聚合的预测
-            attention_weights: 注意力权重
+            predictions: 被试级预测（对齐任务级模型的返回格式）
+            labels: 真实值
+            extras: 额外信息字典，包含：
+                - segment_attention: 片段注意力权重
+                - task_attention: 任务注意力权重
+                - segment_predictions: 片段级预测
+                - aggregated_predictions: 从片段聚合的预测
         """
         if self.model is None:
             raise ValueError('模型未训练或加载')
@@ -731,7 +772,9 @@ class HierarchicalSegmentTrainer:
                     task_conditions=task_conditions,
                 )
 
-                all_subject_predictions.extend(outputs['subject_prediction'].cpu().numpy())
+                # 使用 'prediction' 键（与任务级模型对齐）
+                predictions = outputs.get('prediction', outputs.get('subject_prediction'))
+                all_subject_predictions.extend(predictions.cpu().numpy())
                 all_subject_labels.extend(labels.numpy())
                 all_segment_predictions.append(outputs['segment_predictions'].cpu().numpy())
                 all_segment_masks.append(segment_mask.cpu().numpy())
@@ -748,17 +791,160 @@ class HierarchicalSegmentTrainer:
             segment_predictions, segment_masks
         )
 
-        return (
-            subject_predictions,
-            subject_labels,
-            aggregated_predictions,
-            {
-                'segment_attention': np.concatenate(all_segment_attentions, axis=0),
-                'task_attention': np.concatenate(all_task_attentions, axis=0),
-                'segment_predictions': segment_predictions,
-                'segment_masks': segment_masks,
-            }
-        )
+        # 对齐任务级模型的返回格式: (predictions, labels, attention_weights)
+        extras = {
+            'segment_attention': np.concatenate(all_segment_attentions, axis=0),
+            'task_attention': np.concatenate(all_task_attentions, axis=0),
+            'segment_predictions': segment_predictions,
+            'aggregated_predictions': aggregated_predictions,
+        }
+
+        return subject_predictions, subject_labels, extras
+
+    def plot_training_curves(self, save_path: Optional[str] = None, fold: int = 0) -> Optional[str]:
+        """
+        绘制训练曲线（对齐任务级模型的格式）
+
+        与 DeepLearningTrainer 的 plot_training_curves 方法兼容，
+        同时显示片段级模型的额外指标。
+
+        Args:
+            save_path: 保存路径，None 则使用默认路径
+            fold: 当前折数
+
+        Returns:
+            保存的图片路径，如果失败则返回 None
+        """
+        if not HAS_MATPLOTLIB:
+            logger.warning('matplotlib 未安装，无法生成训练曲线图')
+            return None
+
+        if not self.history.get('train_loss'):
+            logger.warning('训练历史为空，无法生成图表')
+            return None
+
+        # 设置中文字体
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        # 创建 2×2 子图
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        task_type_label = '分类' if self.config.task.type == 'classification' else '回归'
+        fig.suptitle(f'训练曲线 (Fold {fold + 1}) - {task_type_label}任务 (层级-片段联合模型)', fontsize=14, fontweight='bold')
+
+        epochs = range(1, len(self.history['train_loss']) + 1)
+
+        # 子图1: Loss 曲线
+        ax1 = axes[0, 0]
+        ax1.plot(epochs, self.history['train_loss'], 'b-', label='Train Loss', linewidth=2)
+        ax1.plot(epochs, self.history['val_loss'], 'r-', label='Val Loss', linewidth=2)
+        ax1.set_xlabel('Epoch')
+        loss_label = 'Loss (Joint)'  # 联合损失
+        ax1.set_ylabel(loss_label)
+        ax1.set_title('Loss 曲线')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # 标记最佳点
+        best_epoch = np.argmin(self.history['val_loss']) + 1
+        best_val_loss = min(self.history['val_loss'])
+        ax1.axvline(x=best_epoch, color='g', linestyle='--', alpha=0.7, label=f'Best @ {best_epoch}')
+        ax1.scatter([best_epoch], [best_val_loss], color='g', s=100, zorder=5)
+
+        if self.config.task.type == 'classification':
+            # 子图2: Accuracy 曲线
+            ax2 = axes[0, 1]
+            ax2.plot(epochs, self.history['val_accuracy'], 'g-', label='Subject Acc (被试级)', linewidth=2)
+            ax2.plot(epochs, self.history['val_segment_accuracy'], 'b--', label='Segment Acc (片段级)', linewidth=2)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Accuracy')
+            ax2.set_title('Accuracy 曲线')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+
+            # 标记最佳 Accuracy
+            best_acc_epoch = np.argmax(self.history['val_accuracy']) + 1
+            best_acc = max(self.history['val_accuracy'])
+            ax2.axvline(x=best_acc_epoch, color='orange', linestyle='--', alpha=0.7)
+            ax2.scatter([best_acc_epoch], [best_acc], color='orange', s=100, zorder=5)
+            ax2.annotate(f'Best: {best_acc:.4f}', xy=(best_acc_epoch, best_acc),
+                         xytext=(10, -10), textcoords='offset points', fontsize=9)
+
+            # 子图3: F1 曲线
+            ax3 = axes[1, 0]
+            ax3.plot(epochs, self.history['val_f1'], 'm-', label='Subject F1 (被试级)', linewidth=2)
+            ax3.plot(epochs, self.history['val_segment_f1'], 'c--', label='Segment F1 (片段级)', linewidth=2)
+            ax3.set_xlabel('Epoch')
+            ax3.set_ylabel('F1 Score')
+            ax3.set_title('F1 曲线')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+
+            # 标记最佳 F1
+            best_f1_epoch = np.argmax(self.history['val_f1']) + 1
+            best_f1 = max(self.history['val_f1'])
+            ax3.axvline(x=best_f1_epoch, color='purple', linestyle='--', alpha=0.7)
+            ax3.scatter([best_f1_epoch], [best_f1], color='purple', s=100, zorder=5)
+            ax3.annotate(f'Best: {best_f1:.4f}', xy=(best_f1_epoch, best_f1),
+                         xytext=(10, 10), textcoords='offset points', fontsize=9)
+        else:
+            # 子图2: R² 曲线
+            ax2 = axes[0, 1]
+            ax2.plot(epochs, self.history['val_r2'], 'g-', label='Subject R² (被试级)', linewidth=2)
+            ax2.plot(epochs, self.history['val_segment_r2'], 'b--', label='Segment R² (片段级)', linewidth=2)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('R2')
+            ax2.set_title('R2 曲线')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+
+            # 标记最佳 R²
+            best_r2_epoch = np.argmax(self.history['val_r2']) + 1
+            best_r2 = max(self.history['val_r2'])
+            ax2.axvline(x=best_r2_epoch, color='orange', linestyle='--', alpha=0.7)
+            ax2.scatter([best_r2_epoch], [best_r2], color='orange', s=100, zorder=5)
+            ax2.annotate(f'Best: {best_r2:.4f}', xy=(best_r2_epoch, best_r2),
+                         xytext=(10, -10), textcoords='offset points', fontsize=9)
+
+            # 子图3: MAE 曲线
+            ax3 = axes[1, 0]
+            ax3.plot(epochs, self.history['val_mae'], 'm-', label='Subject MAE (被试级)', linewidth=2)
+            ax3.plot(epochs, self.history['val_segment_mae'], 'c--', label='Segment MAE (片段级)', linewidth=2)
+            ax3.set_xlabel('Epoch')
+            ax3.set_ylabel('MAE')
+            ax3.set_title('MAE 曲线')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+
+            # 标记最佳 MAE
+            best_mae_epoch = np.argmin(self.history['val_mae']) + 1
+            best_mae = min(self.history['val_mae'])
+            ax3.axvline(x=best_mae_epoch, color='purple', linestyle='--', alpha=0.7)
+            ax3.scatter([best_mae_epoch], [best_mae], color='purple', s=100, zorder=5)
+            ax3.annotate(f'Best: {best_mae:.4f}', xy=(best_mae_epoch, best_mae),
+                         xytext=(10, 10), textcoords='offset points', fontsize=9)
+
+        # 子图4: Learning Rate 曲线
+        ax4 = axes[1, 1]
+        ax4.plot(epochs, self.history['learning_rate'], 'c-', label='Learning Rate', linewidth=2)
+        ax4.set_xlabel('Epoch')
+        ax4.set_ylabel('Learning Rate')
+        ax4.set_title('学习率曲线')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        ax4.set_yscale('log')  # 对数刻度更清晰
+
+        plt.tight_layout()
+
+        # 保存图片
+        if save_path is None:
+            save_path = os.path.join(self.config.experiment.output_dir, f'training_curves_fold{fold}.png')
+
+        plt.savefig(save_path, dpi=self.config.output.figure_dpi, bbox_inches='tight')
+        plt.close(fig)
+
+        logger.info(f'训练曲线已保存: {save_path}')
+        return save_path
 
     def load_model(self, model_path: str) -> None:
         """加载模型"""

@@ -20,7 +20,7 @@ import os
 import pickle
 import sys
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import numpy as np
 import torch
@@ -38,6 +38,114 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def split_2x2_hierarchical(
+    data: List[Dict],
+    train_subjects: int = 100,
+    train_tasks: int = 20,
+    train_val_split: float = 0.9,
+    seed: int = 42,
+) -> Tuple[List[Dict], List[Dict], List[Dict], List[Dict], List[Dict]]:
+    """
+    2×2划分：被试维度 × 任务维度（层级数据集版本）
+
+    划分方式：
+    - 被试分为：前train_subjects人(训练) / 剩余(测试)
+    - 任务分为：前train_tasks题(训练) / 剩余(测试)
+
+    产生5个集合：
+    - train_pool: 前train_subjects人 × 前train_tasks题 (用于划分train/val)
+    - test1: 剩余被试 × 前train_tasks题 (新被试+旧题)
+    - test2: 前train_subjects人 × 剩余题目 (旧被试+新题)
+    - test3: 剩余被试 × 剩余题目 (新被试+新题)
+
+    Args:
+        data: 预处理数据列表（每个元素包含 subject_id 和 tasks）
+        train_subjects: 训练集被试数量
+        train_tasks: 训练集任务数量
+        train_val_split: 从train_pool中划分train/val的比例
+        seed: 随机种子
+
+    Returns:
+        train_data, val_data, test1_data, test2_data, test3_data
+    """
+    # 获取所有被试ID并排序
+    subject_ids = sorted(list(set([d['subject_id'] for d in data])))
+
+    # 被试分组
+    train_subject_ids = subject_ids[:train_subjects]
+    test_subject_ids = subject_ids[train_subjects:]
+
+    train_subject_set = set(train_subject_ids)
+    test_subject_set = set(test_subject_ids)
+
+    # 任务分组（task_id 从 1 开始）
+    train_task_ids = set(range(1, train_tasks + 1))
+    test_task_ids = set(range(train_tasks + 1, 31))
+
+    # 2×2划分
+    train_pool = []   # 前100人 × 前20题
+    test1 = []        # 后57人 × 前20题
+    test2 = []        # 前100人 × 后10题
+    test3 = []        # 后57人 × 后10题
+
+    for subject_data in data:
+        sid = subject_data['subject_id']
+
+        # 检查该被试的每个任务属于哪个集合
+        train_tasks = []
+        test1_tasks = []
+        test2_tasks = []
+        test3_tasks = []
+
+        for task in subject_data.get('tasks', []):
+            tid = task.get('task_id', 0)
+
+            if sid in train_subject_set and tid in train_task_ids:
+                train_tasks.append(task)
+            elif sid in test_subject_set and tid in train_task_ids:
+                test1_tasks.append(task)
+            elif sid in train_subject_set and tid in test_task_ids:
+                test2_tasks.append(task)
+            elif sid in test_subject_set and tid in test_task_ids:
+                test3_tasks.append(task)
+
+        # 只保留至少有一个任务的被试
+        if train_tasks:
+            train_pool.append({
+                **subject_data,
+                'tasks': train_tasks,
+            })
+        if test1_tasks:
+            test1.append({
+                **subject_data,
+                'tasks': test1_tasks,
+            })
+        if test2_tasks:
+            test2.append({
+                **subject_data,
+                'tasks': test2_tasks,
+            })
+        if test3_tasks:
+            test3.append({
+                **subject_data,
+                'tasks': test3_tasks,
+            })
+
+    # 从train_pool中按被试划分train/val
+    rng = np.random.RandomState(seed)
+    train_pool_subjects = sorted(list(set([d['subject_id'] for d in train_pool])))
+    rng.shuffle(train_pool_subjects)
+
+    n_train = int(len(train_pool_subjects) * train_val_split)
+    train_subject_set_final = set(train_pool_subjects[:n_train])
+    val_subject_set = set(train_pool_subjects[n_train:])
+
+    train_data = [d for d in train_pool if d['subject_id'] in train_subject_set_final]
+    val_data = [d for d in train_pool if d['subject_id'] in val_subject_set]
+
+    return train_data, val_data, test1, test2, test3
 
 
 class HierarchicalSegmentDataset(Dataset):
@@ -301,19 +409,44 @@ def main():
         all_data = pickle.load(f)
     logger.info(f'加载了 {len(all_data)} 个被试')
 
-    # 划分训练/验证集
-    from sklearn.model_selection import train_test_split
-    train_data, val_data = train_test_split(
+    # 2×2划分训练/验证/测试集（对齐任务级模型）
+    logger.info('使用 2×2 划分数据集（被试 × 任务）...')
+    train_data, val_data, test1_data, test2_data, test3_data = split_2x2_hierarchical(
         all_data,
-        test_size=0.2,
-        random_state=config.experiment.random_seed,
+        train_subjects=config.experiment.train_subjects,
+        train_tasks=config.experiment.train_tasks,
+        train_val_split=getattr(config.training, 'train_val_split', 0.9),
+        seed=config.experiment.random_seed,
     )
-    logger.info(f'训练集: {len(train_data)}，验证集: {len(val_data)}')
+
+    # 统计各集合信息
+    def count_stats(data: List[Dict]) -> Tuple[int, int, int]:
+        """统计被试数、任务数、片段数"""
+        subjects = set([d['subject_id'] for d in data])
+        tasks = set()
+        segments = 0
+        for d in data:
+            for task in d.get('tasks', []):
+                tasks.add(task.get('task_id', 0))
+                segments += len(task.get('segments', []))
+        return len(subjects), len(tasks), segments
+
+    train_s, train_t, train_seg = count_stats(train_data)
+    val_s, val_t, val_seg = count_stats(val_data)
+    test1_s, test1_t, test1_seg = count_stats(test1_data)
+    test2_s, test2_t, test2_seg = count_stats(test2_data)
+    test3_s, test3_t, test3_seg = count_stats(test3_data)
+
+    logger.info(f'训练集:   {train_s}被试 × {train_t}任务 ≈ {train_seg}片段')
+    logger.info(f'验证集:   {val_s}被试 × {val_t}任务 ≈ {val_seg}片段')
+    logger.info(f'测试集1:  {test1_s}被试 × {test1_t}任务 ≈ {test1_seg}片段 (新被试+旧任务)')
+    logger.info(f'测试集2:  {test2_s}被试 × {test2_t}任务 ≈ {test2_seg}片段 (旧被试+新任务)')
+    logger.info(f'测试集3:  {test3_s}被试 × {test3_t}任务 ≈ {test3_seg}片段 (新被试+新任务)')
 
     # 创建序列配置
     seq_config = config.to_seq_config()
 
-    # 创建数据集
+    # 创建训练和验证数据集
     train_dataset = HierarchicalSegmentDataset(
         data=train_data,
         config=seq_config,
@@ -327,12 +460,43 @@ def main():
         normalizer_stats=train_dataset.stats,
     )
 
+    # 创建测试数据集
+    test1_dataset = HierarchicalSegmentDataset(
+        data=test1_data,
+        config=seq_config,
+        fit_normalizer=False,
+        normalizer_stats=train_dataset.stats,
+    )
+    test2_dataset = HierarchicalSegmentDataset(
+        data=test2_data,
+        config=seq_config,
+        fit_normalizer=False,
+        normalizer_stats=train_dataset.stats,
+    )
+    test3_dataset = HierarchicalSegmentDataset(
+        data=test3_data,
+        config=seq_config,
+        fit_normalizer=False,
+        normalizer_stats=train_dataset.stats,
+    )
+
     # 导入并修改训练器以使用我们的 collate_fn
     from src.models.hierarchical_segment_trainer import HierarchicalSegmentTrainer
     from torch.utils.data import DataLoader
 
     class CustomHierarchicalSegmentTrainer(HierarchicalSegmentTrainer):
         """自定义训练器，使用我们的数据集"""
+
+        def evaluate(self, dataset, desc="评估"):
+            """评估数据集"""
+            loader = DataLoader(
+                dataset,
+                batch_size=self.config.training.batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+                num_workers=0,
+            )
+            return self.validate(self.model, loader, has_segment_labels=True)
 
         def train(self, train_dataset, val_dataset, fold=0):
             """覆盖 train 方法以使用自定义 collate_fn"""
@@ -347,7 +511,7 @@ def main():
 
             train_loader = DataLoader(train_dataset, shuffle=True, **loader_kwargs)
             val_loader = DataLoader(val_dataset, shuffle=False, **loader_kwargs)
-            
+
             # 强制启用片段标签（我们的数据集始终有 segment_labels）
             self.has_segment_labels = True
 
@@ -437,7 +601,59 @@ def main():
 
     # 训练
     metrics = trainer.train(train_dataset, val_dataset, fold=0)
-    logger.info(f"最终指标: {metrics}")
+    logger.info(f"最终验证指标: {metrics}")
+
+    # 加载最佳模型并评估测试集（对齐任务级模型）
+    logger.info("\n" + "="*85)
+    logger.info("测试结果汇总")
+    logger.info("="*85)
+
+    # 重新加载最佳模型
+    model_path = os.path.join(config.experiment.output_dir, 'model_best.pt')
+    trainer.load_model(model_path)
+
+    # 定义测试集
+    test_sets = [
+        ("Test1 (新被试+旧任务)", test1_dataset),
+        ("Test2 (旧被试+新任务)", test2_dataset),
+        ("Test3 (新被试+新任务)", test3_dataset),
+    ]
+
+    # 打印表头
+    if config.task.type == 'classification':
+        logger.info(f"{'数据集':<25} {'Loss':<10} {'Sub_Acc':<10} {'Seg_Acc':<10} {'Sub_F1':<10} {'Seg_F1':<10}")
+    else:
+        logger.info(f"{'数据集':<25} {'Loss':<10} {'Sub_R2':<10} {'Seg_R2':<10} {'Sub_MAE':<10} {'Seg_MAE':<10}")
+    logger.info("-"*85)
+
+    all_test_results = {}
+    for name, test_dataset in test_sets:
+        test_metrics = trainer.evaluate(test_dataset, desc=name)
+        all_test_results[name] = test_metrics
+
+        if config.task.type == 'classification':
+            logger.info(f"{name:<25} "
+                       f"{test_metrics['total_loss']:<10.4f} "
+                       f"{test_metrics['subject_accuracy']:<10.4f} "
+                       f"{test_metrics['segment_accuracy']:<10.4f} "
+                       f"{test_metrics['subject_f1']:<10.4f} "
+                       f"{test_metrics['segment_f1']:<10.4f}")
+        else:
+            logger.info(f"{name:<25} "
+                       f"{test_metrics['total_loss']:<10.4f} "
+                       f"{test_metrics['subject_r2']:<10.4f} "
+                       f"{test_metrics['segment_r2']:<10.4f} "
+                       f"{test_metrics['subject_mae']:<10.4f} "
+                       f"{test_metrics['segment_mae']:<10.4f}")
+
+    logger.info("="*85)
+
+    # 保存测试结果
+    import json
+    results_path = os.path.join(config.experiment.output_dir, 'test_results.json')
+    with open(results_path, 'w') as f:
+        json.dump(all_test_results, f, indent=2, default=float)
+    logger.info(f"\n测试结果已保存: {results_path}")
 
     return 0
 
