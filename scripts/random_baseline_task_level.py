@@ -2,7 +2,7 @@
 """
 任务级模型随机基线测试脚本
 
-对三个测试集(test1, test2, test3)生成随机预测，计算与模型训练时相同的评估指标，
+对同分布验证集 + 三个测试集生成随机预测，计算与模型训练时相同的评估指标，
 用于与真实模型性能进行对比。
 
 评估指标:
@@ -19,6 +19,7 @@ import json
 import pickle
 import random
 import logging
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -53,6 +54,21 @@ class Subset(Dataset):
     
     def __len__(self):
         return len(self.indices)
+
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description='任务级模型随机基线测试脚本',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='configs/task_level.json',
+        help='配置文件路径',
+    )
+    return parser.parse_args()
 
 
 def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, seed=42):
@@ -132,6 +148,7 @@ def evaluate_random_baseline(loader, num_classes=3, class_weights=None, device='
     """
     all_preds = []
     all_labels = []
+    all_probs = []
     total_loss = 0.0
     
     # 损失函数
@@ -147,6 +164,10 @@ def evaluate_random_baseline(loader, num_classes=3, class_weights=None, device='
         
         # 生成随机预测 (均匀分布)
         random_preds = torch.randint(0, num_classes, (batch_size,), device=device)
+        random_probs = torch.nn.functional.one_hot(
+            random_preds,
+            num_classes=num_classes
+        ).float()
         
         # 为了计算损失，生成随机logits（每个类别的概率相等）
         # 使用很小的随机值，让softmax输出接近均匀分布
@@ -159,6 +180,7 @@ def evaluate_random_baseline(loader, num_classes=3, class_weights=None, device='
         # 收集预测和标签
         all_preds.extend(random_preds.cpu().numpy())
         all_labels.extend(labels.cpu().numpy())
+        all_probs.extend(random_probs.cpu().numpy())
     
     # 计算指标
     avg_loss = total_loss / len(all_labels)
@@ -180,6 +202,7 @@ def evaluate_random_baseline(loader, num_classes=3, class_weights=None, device='
         'spearman_p': spearman_p,
         'predictions': all_preds,
         'labels': all_labels,
+        'probabilities': all_probs,
     }
 
 
@@ -198,6 +221,7 @@ def evaluate_stratified_random(loader, train_class_dist, num_classes=3, device='
     """
     all_preds = []
     all_labels = []
+    all_probs = []
     total_loss = 0.0
     
     criterion = nn.CrossEntropyLoss()
@@ -212,6 +236,10 @@ def evaluate_stratified_random(loader, train_class_dist, num_classes=3, device='
             np.random.choice(num_classes, size=batch_size, p=train_class_dist),
             device=device
         )
+        random_probs = torch.nn.functional.one_hot(
+            random_preds,
+            num_classes=num_classes
+        ).float()
         
         # 为了计算损失，生成符合类别分布的logits
         random_logits = torch.randn(batch_size, num_classes, device=device) * 0.1
@@ -226,6 +254,7 @@ def evaluate_stratified_random(loader, train_class_dist, num_classes=3, device='
         # 收集预测和标签
         all_preds.extend(random_preds.cpu().numpy())
         all_labels.extend(labels.cpu().numpy())
+        all_probs.extend(random_probs.cpu().numpy())
     
     # 计算指标
     avg_loss = total_loss / len(all_labels)
@@ -247,12 +276,15 @@ def evaluate_stratified_random(loader, train_class_dist, num_classes=3, device='
         'spearman_p': spearman_p,
         'predictions': all_preds,
         'labels': all_labels,
+        'probabilities': all_probs,
     }
 
 
 def main():
+    args = parse_args()
+
     # 加载配置
-    config_path = Path('configs/task_level.json')
+    config_path = Path(args.config)
     with open(config_path) as f:
         config = json.load(f)
     
@@ -303,6 +335,7 @@ def main():
         seed=config['experiment']['random_seed']
     )
     
+    val_dataset = Subset(dataset, val_indices)
     test1_dataset = Subset(dataset, test1_indices)
     test2_dataset = Subset(dataset, test2_indices)
     test3_dataset = Subset(dataset, test3_indices)
@@ -313,16 +346,22 @@ def main():
         tasks = set([dataset.samples[i]['task_id'] for i in indices])
         return len(subjects), len(tasks), len(indices)
     
+    val_s, val_t, val_n = get_stats(val_indices)
     test1_s, test1_t, test1_n = get_stats(test1_indices)
     test2_s, test2_t, test2_n = get_stats(test2_indices)
     test3_s, test3_t, test3_n = get_stats(test3_indices)
     
+    logger.info(f"验证集(同分布): {val_s}被试 × {val_t}题 = {val_n}样本")
     logger.info(f"测试集1: {test1_s}被试 × {test1_t}题 = {test1_n}样本 (新被试+旧题)")
     logger.info(f"测试集2: {test2_s}被试 × {test2_t}题 = {test2_n}样本 (旧被试+新题)")
     logger.info(f"测试集3: {test3_s}被试 × {test3_t}题 = {test3_n}样本 (新被试+新题)")
     
     # 创建DataLoader
     batch_size = config['training']['batch_size']
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size,
+        collate_fn=task_level_collate_fn, num_workers=4, pin_memory=True
+    )
     test1_loader = DataLoader(
         test1_dataset, batch_size=batch_size,
         collate_fn=task_level_collate_fn, num_workers=4, pin_memory=True
@@ -349,8 +388,9 @@ def main():
     else:
         class_weights = None
     
-    # 定义测试集
-    test_sets = [
+    # 定义评估集（同分布验证集 + 三个测试分布）
+    eval_sets = [
+        ("Val (同分布)", val_loader),
         ("Test1 (新被试+旧题)", test1_loader),
         ("Test2 (旧被试+新题)", test2_loader),
         ("Test3 (新被试+新题)", test3_loader),
@@ -365,7 +405,7 @@ def main():
     print("-"*100)
     
     uniform_results = {}
-    for name, loader in test_sets:
+    for name, loader in eval_sets:
         metrics = evaluate_random_baseline(
             loader, 
             num_classes=config['model']['num_classes'],
@@ -388,7 +428,7 @@ def main():
     print("-"*100)
     
     stratified_results = {}
-    for name, loader in test_sets:
+    for name, loader in eval_sets:
         metrics = evaluate_stratified_random(
             loader,
             train_class_dist=train_class_dist,
@@ -402,7 +442,7 @@ def main():
     print("="*100)
     
     # ==================== 详细报告 ====================
-    for name, _ in test_sets:
+    for name, _ in eval_sets:
         print(f"\n{'='*80}")
         print(f"{name} - 均匀随机基线详细报告")
         print("="*80)
@@ -442,6 +482,10 @@ def main():
             'spearman_p': uniform_results[name]['spearman_p'],
             'predictions': [int(p) for p in uniform_results[name]['predictions']],
             'labels': [int(l) for l in uniform_results[name]['labels']],
+            'probabilities': [
+                [float(x) for x in prob]
+                for prob in uniform_results[name].get('probabilities', [])
+            ],
         }
         results['stratified_random'][name] = {
             'loss': stratified_results[name]['loss'],
@@ -452,6 +496,10 @@ def main():
             'spearman_p': stratified_results[name]['spearman_p'],
             'predictions': [int(p) for p in stratified_results[name]['predictions']],
             'labels': [int(l) for l in stratified_results[name]['labels']],
+            'probabilities': [
+                [float(x) for x in prob]
+                for prob in stratified_results[name].get('probabilities', [])
+            ],
         }
     
     # 保存为JSON

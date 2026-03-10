@@ -135,6 +135,7 @@ class TaskLevelTrainer:
         total_loss = 0.0
         all_preds = []
         all_labels = []
+        all_probs = []
         
         for batch in tqdm(dataloader, desc=desc, leave=False):
             segments = batch['segments'].to(self.device)
@@ -147,8 +148,10 @@ class TaskLevelTrainer:
             
             total_loss += loss.item()
             pred = logits.argmax(dim=1)
+            probs = torch.softmax(logits, dim=1)
             all_preds.extend(pred.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
         
         avg_loss = total_loss / len(dataloader)
         accuracy = (np.array(all_preds) == np.array(all_labels)).mean()
@@ -165,6 +168,7 @@ class TaskLevelTrainer:
             'f1_macro': f1_macro,
             'predictions': all_preds,
             'labels': all_labels,
+            'probabilities': all_probs,
         }
     
     def save_checkpoint(self, path: str, epoch: int, best_metric: float):

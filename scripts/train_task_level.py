@@ -9,6 +9,7 @@ import json
 import pickle
 import random
 import logging
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -32,6 +33,51 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def str2bool(value):
+    """解析命令行布尔值"""
+    if isinstance(value, bool):
+        return value
+    val = value.lower()
+    if val in {'true', '1', 'yes', 'y', 't'}:
+        return True
+    if val in {'false', '0', 'no', 'n', 'f'}:
+        return False
+    raise argparse.ArgumentTypeError(f'Invalid boolean value: {value}')
+
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description='任务级模型训练脚本',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='configs/task_level.json',
+        help='配置文件路径',
+    )
+    parser.add_argument(
+        '--use-task-embedding',
+        type=str2bool,
+        default=None,
+        help='覆盖配置中的 use_task_embedding（true/false）',
+    )
+    parser.add_argument(
+        '--experiment-name',
+        type=str,
+        default=None,
+        help='覆盖配置中的 experiment.name',
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default=None,
+        help='覆盖配置中的 experiment.output_dir',
+    )
+    return parser.parse_args()
 
 
 def plot_training_curves(history: dict, output_path: Path, early_stop_epoch: int = None, early_stop_metric: str = 'f1_macro'):
@@ -251,10 +297,23 @@ class Subset(Dataset):
 
 
 def main():
+    args = parse_args()
+
     # 加载配置
-    config_path = Path('configs/task_level.json')
+    config_path = Path(args.config)
     with open(config_path) as f:
         config = json.load(f)
+
+    # 命令行覆盖配置（保持默认行为兼容）
+    if args.use_task_embedding is not None:
+        config['model']['use_task_embedding'] = args.use_task_embedding
+        logger.info(f"命令行覆盖: model.use_task_embedding={args.use_task_embedding}")
+    if args.experiment_name:
+        config['experiment']['name'] = args.experiment_name
+        logger.info(f"命令行覆盖: experiment.name={args.experiment_name}")
+    if args.output_dir:
+        config['experiment']['output_dir'] = args.output_dir
+        logger.info(f"命令行覆盖: experiment.output_dir={args.output_dir}")
     
     set_seed(config['experiment']['random_seed'])
     
@@ -522,22 +581,23 @@ def main():
     print(f"\n加载最佳模型 (Best Val {early_stop_metric}: {best_val_metric:.4f}) 进行测试...")
     trainer.load_checkpoint(output_dir / 'best_model.pt')
     
-    # 定义测试集
-    test_sets = [
+    # 定义评估集（包含同分布验证集 + 三个测试分布）
+    eval_sets = [
+        ("Val (同分布)", val_loader),
         ("Test1 (新被试+旧题)", test1_loader),
         ("Test2 (旧被试+新题)", test2_loader),
         ("Test3 (新被试+新题)", test3_loader),
     ]
     
     print("\n" + "="*85)
-    print("测试结果汇总")
+    print("评估结果汇总")
     print("="*85)
     print(f"{'数据集':<25} {'Loss':<10} {'Acc':<10} {'F1(Weighted)':<15} {'F1(Macro)':<12} {'Spearman':<10}")
     print("-"*95)
     
-    all_test_results = {}
+    all_eval_results = {}
     
-    for name, loader in test_sets:
+    for name, loader in eval_sets:
         metrics = trainer.evaluate(loader, desc=name)
         
         # 计算 Spearman 等级相关系数
@@ -545,13 +605,13 @@ def main():
         metrics['spearman'] = spearman_corr
         metrics['spearman_p'] = spearman_p
         
-        all_test_results[name] = metrics
+        all_eval_results[name] = metrics
         print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1_weighted']:<15.4f} {metrics['f1_macro']:<12.4f} {metrics['spearman']:<10.4f}")
     
     print("="*95)
     
     # 详细评估报告
-    for name, metrics in all_test_results.items():
+    for name, metrics in all_eval_results.items():
         print(f"\n{'='*70}")
         print(f"{name} - 详细报告")
         print("="*70)
@@ -566,9 +626,9 @@ def main():
         print("混淆矩阵:")
         print(confusion_matrix(metrics['labels'], metrics['predictions']))
     
-    # 保存测试结果
+    # 保存评估结果（包含同分布验证集 + 三个测试分布）
     test_results = {}
-    for name, metrics in all_test_results.items():
+    for name, metrics in all_eval_results.items():
         test_results[name] = {
             'loss': metrics['loss'],
             'accuracy': metrics['accuracy'],
@@ -578,6 +638,10 @@ def main():
             'spearman_p': metrics['spearman_p'],
             'predictions': [int(p) for p in metrics['predictions']],
             'labels': [int(l) for l in metrics['labels']],
+            'probabilities': [
+                [float(x) for x in prob]
+                for prob in metrics.get('probabilities', [])
+            ],
         }
     
     with open(output_dir / 'test_results.json', 'w') as f:
