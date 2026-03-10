@@ -304,7 +304,10 @@ def recover_indist_metrics_from_run_dir(run_dir: Path) -> Dict[str, Any]:
             task_conditions = batch["task_conditions"]
             labels = batch["labels"]
 
-            logits = model(segments, segment_mask, task_conditions)
+            segment_seq_mask = batch.get("segment_seq_mask")
+            if segment_seq_mask is not None:
+                segment_seq_mask = segment_seq_mask.to(device)
+            logits = model(segments, segment_mask, task_conditions, segment_seq_mask)
             probs = torch.softmax(logits, dim=1)
             preds = torch.argmax(logits, dim=1)
 

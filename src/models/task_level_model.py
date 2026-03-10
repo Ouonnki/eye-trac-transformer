@@ -108,31 +108,38 @@ class TaskLevelEncoder(nn.Module):
         segments: torch.Tensor,
         segment_mask: Optional[torch.Tensor] = None,
         task_conditions: Optional[torch.Tensor] = None,
+        segment_seq_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         前向传播
         
         Args:
-            segments: (B, 25, 300, 7) 眼动序列
-            segment_mask: (B, 25) 有效片段掩码
+            segments: (B, S, 300, 7) 眼动序列（S为每个任务片段数）
+            segment_mask: (B, S) 有效片段掩码
             task_conditions: (B, 5) 任务条件 [grid_scale, continuous_thinking, click_disappear, has_distractor, has_task_distractor]
+            segment_seq_mask: (B, S, 300) 片段内有效时步掩码
         
         Returns:
             logits: (B, 3) 分类logits
         """
         B = segments.size(0)
         
-        # 1. 编码25个片段
-        # (B, 25, 300, 7) -> (B*25, 300, 7)
-        flat_segments = segments.view(B * self.max_segments, -1, segments.size(-1))
+        # 1. 编码所有片段
+        # (B, S, 300, 7) -> (B*S, 300, 7)
+        num_segments = segments.size(1)
+        flat_segments = segments.view(B * num_segments, -1, segments.size(-1))
+        if segment_seq_mask is not None:
+            flat_seq_mask = segment_seq_mask.view(B * num_segments, -1)
+        else:
+            flat_seq_mask = None
         
-        # 编码 -> (B*25, 96)
-        segment_reprs, _ = self.segment_encoder(flat_segments, mask=None)
+        # 编码 -> (B*S, 96)
+        segment_reprs, _ = self.segment_encoder(flat_segments, mask=flat_seq_mask)
         
-        # 重塑 -> (B, 25, 96)
-        segment_reprs = segment_reprs.view(B, self.max_segments, self.segment_d_model)
+        # 重塑 -> (B, S, 96)
+        segment_reprs = segment_reprs.view(B, num_segments, self.segment_d_model)
         
-        # 2. 聚合25个片段 -> (B, 96)
+        # 2. 聚合片段 -> (B, 96)
         task_repr, _ = self.segment_aggregator(segment_reprs, segment_mask)
         
         # 3. 任务嵌入 -> (B, 10) 或空

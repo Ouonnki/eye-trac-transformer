@@ -54,6 +54,9 @@ logs/
 # Claude Code
 .claude/
 
+# Codex
+.agents/
+
 # 系统文件
 .DS_Store
 Thumbs.db

@@ -342,8 +342,9 @@ def main():
     dataset = TaskLevelGazeDataset(
         processed_data=processed_data,
         config=seq_config,
-        fit_normalizer=True,
+        fit_normalizer=False,
     )
+    logger.info("已关闭训练阶段全局归一化拟合（假设输入数据已完成被试内标准化）")
     
     # 收集所有标签
     all_labels = np.array([s['label'] for s in dataset.samples])
@@ -609,6 +610,9 @@ def main():
         print(f"{name:<25} {metrics['loss']:<10.4f} {metrics['accuracy']:<10.4f} {metrics['f1_weighted']:<15.4f} {metrics['f1_macro']:<12.4f} {metrics['spearman']:<10.4f}")
     
     print("="*95)
+
+    if "Val (同分布)" not in all_eval_results:
+        raise ValueError("评估结果缺少 Val (同分布)，请检查评估集定义")
     
     # 详细评估报告
     for name, metrics in all_eval_results.items():

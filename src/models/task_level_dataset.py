@@ -36,8 +36,9 @@ class TaskLevelGazeDataset(Dataset):
     
     每个样本 = 一个被试的一个任务
     返回格式：
-    - segments: (25, 300, 7) 眼动序列
-    - segment_mask: (25,) 有效片段掩码
+    - segments: (N, 300, 7) 眼动序列（N为该任务片段数，不做截断）
+    - segment_mask: (N,) 有效片段掩码
+    - segment_seq_mask: (N, 300) 片段内有效时步掩码
     - task_conditions: (5,) 任务条件
     - label: 任务级分类标签 (0/1/2)
     """
@@ -112,20 +113,23 @@ class TaskLevelGazeDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         sample = self.samples[idx]
-        
-        # 初始化张量 (25, 300, 7)
+
+        # 使用真实片段数，避免截断
+        num_segments = len(sample['segments'])
         segments = np.zeros(
-            (self.config.max_segments, self.config.max_seq_len, self.config.input_dim),
+            (num_segments, self.config.max_seq_len, self.config.input_dim),
             dtype=np.float32
         )
-        segment_mask = np.zeros(self.config.max_segments, dtype=np.bool_)
-        
+        segment_mask = np.zeros(num_segments, dtype=np.bool_)
+        segment_seq_mask = np.zeros((num_segments, self.config.max_seq_len), dtype=np.bool_)
+
         # 填充片段数据
-        for s_idx, seg_features in enumerate(sample['segments'][:self.config.max_segments]):
+        for s_idx, seg_features in enumerate(sample['segments']):
             seq_len = min(len(seg_features), self.config.max_seq_len)
             if seq_len > 0:
                 segments[s_idx, :seq_len] = seg_features[:seq_len]
                 segment_mask[s_idx] = True
+                segment_seq_mask[s_idx, :seq_len] = True
         
         # 任务条件 (5维)
         tc = sample['task_conditions']
@@ -140,6 +144,7 @@ class TaskLevelGazeDataset(Dataset):
         return {
             'segments': torch.from_numpy(segments),
             'segment_mask': torch.from_numpy(segment_mask),
+            'segment_seq_mask': torch.from_numpy(segment_seq_mask),
             'task_conditions': torch.from_numpy(task_conditions),
             'label': torch.tensor(sample['label'], dtype=torch.long),
             'subject_id': sample['subject_id'],
@@ -157,9 +162,41 @@ def task_level_collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
     任务级数据集的collate函数
     """
+    if not batch:
+        return {
+            'segments': torch.empty(0),
+            'segment_mask': torch.empty(0, dtype=torch.bool),
+            'segment_seq_mask': torch.empty(0, dtype=torch.bool),
+            'task_conditions': torch.empty(0, dtype=torch.long),
+            'labels': torch.empty(0, dtype=torch.long),
+            'subject_ids': [],
+            'task_ids': [],
+        }
+
+    batch_size = len(batch)
+    max_segments = max(b['segments'].shape[0] for b in batch)
+    max_seq_len = batch[0]['segments'].shape[1]
+    input_dim = batch[0]['segments'].shape[2]
+
+    segments = torch.zeros(
+        (batch_size, max_segments, max_seq_len, input_dim),
+        dtype=batch[0]['segments'].dtype
+    )
+    segment_mask = torch.zeros((batch_size, max_segments), dtype=torch.bool)
+    segment_seq_mask = torch.zeros((batch_size, max_segments, max_seq_len), dtype=torch.bool)
+
+    for i, item in enumerate(batch):
+        segs = item['segments']
+        n = segs.shape[0]
+        if n > 0:
+            segments[i, :n] = segs
+            segment_mask[i, :n] = item['segment_mask']
+            segment_seq_mask[i, :n] = item['segment_seq_mask']
+
     return {
-        'segments': torch.stack([b['segments'] for b in batch]),
-        'segment_mask': torch.stack([b['segment_mask'] for b in batch]),
+        'segments': segments,
+        'segment_mask': segment_mask,
+        'segment_seq_mask': segment_seq_mask,
         'task_conditions': torch.stack([b['task_conditions'] for b in batch]),
         'labels': torch.stack([b['label'] for b in batch]),
         'subject_ids': [b['subject_id'] for b in batch],

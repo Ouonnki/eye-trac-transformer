@@ -91,9 +91,17 @@ class TaskLevelTrainer:
             segments = batch['segments'].to(self.device)
             segment_mask = batch['segment_mask'].to(self.device)
             task_conditions = batch['task_conditions'].to(self.device)
+            segment_seq_mask = batch.get('segment_seq_mask')
+            if segment_seq_mask is not None:
+                segment_seq_mask = segment_seq_mask.to(self.device)
             labels = batch['labels'].to(self.device)
             
-            logits = self.model(segments, segment_mask, task_conditions)
+            logits = self.model(
+                segments,
+                segment_mask,
+                task_conditions,
+                segment_seq_mask
+            )
             loss = self.criterion(logits, labels)
             
             loss.backward()
@@ -141,9 +149,17 @@ class TaskLevelTrainer:
             segments = batch['segments'].to(self.device)
             segment_mask = batch['segment_mask'].to(self.device)
             task_conditions = batch['task_conditions'].to(self.device)
+            segment_seq_mask = batch.get('segment_seq_mask')
+            if segment_seq_mask is not None:
+                segment_seq_mask = segment_seq_mask.to(self.device)
             labels = batch['labels'].to(self.device)
             
-            logits = self.model(segments, segment_mask, task_conditions)
+            logits = self.model(
+                segments,
+                segment_mask,
+                task_conditions,
+                segment_seq_mask
+            )
             loss = self.criterion(logits, labels)
             
             total_loss += loss.item()
