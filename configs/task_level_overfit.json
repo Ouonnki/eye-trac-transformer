@@ -23,7 +23,8 @@
     "use_task_embedding": true,
     "dropout": 0.0,
     "num_classes": 3,
-    "use_gradient_checkpointing": true
+    "use_gradient_checkpointing": true,
+    "segment_encoder_type": "transformer"
   },
   "training": {
     "batch_size": 1,
@@ -38,9 +39,17 @@
     "num_workers": 0,
     "skip_test_evaluation": true,
     "class_weights_mode": "auto",
-    "class_weights": [2.2, 0.4484, 1.9],
+    "class_weights": [
+      2.2,
+      0.4484,
+      1.9
+    ],
     "use_focal_loss": false,
-    "focal_loss_alpha": [0.25, 0.25, 0.25],
+    "focal_loss_alpha": [
+      0.25,
+      0.25,
+      0.25
+    ],
     "focal_loss_gamma": 2.0,
     "use_balanced_sampler": true,
     "balanced_sampler_mode": "effective_num",

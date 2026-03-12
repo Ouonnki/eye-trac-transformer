@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 
-from src.models.encoders import GazeTransformerEncoder
+from src.models.encoders import GazeTransformerEncoder, GazeCnnEncoder, GazeRnnEncoder
 from src.models.attention import AttentionPooling
 from src.models.task_embedding import TaskEmbedding
 from src.models.heads import PredictionHead
@@ -44,6 +44,12 @@ class TaskLevelEncoder(nn.Module):
         segment_d_model: int = 96,
         segment_nhead: int = 4,
         segment_num_layers: int = 4,
+        segment_encoder_type: str = "transformer",
+        segment_rnn_hidden_size: Optional[int] = None,
+        segment_rnn_layers: int = 1,
+        segment_rnn_dropout: float = 0.0,
+        segment_cnn_channels: Optional[list] = None,
+        segment_cnn_kernel_sizes: Optional[list] = None,
         attention_dim: int = 32,
         task_embedding_dim: int = 2,
         use_task_embedding: bool = True,
@@ -65,16 +71,43 @@ class TaskLevelEncoder(nn.Module):
             raise ValueError("ordinal 模式要求 num_classes >= 2")
         
         # 1. 片段编码器
-        self.segment_encoder = GazeTransformerEncoder(
-            input_dim=input_dim,
-            d_model=segment_d_model,
-            nhead=segment_nhead,
-            num_layers=segment_num_layers,
-            dim_feedforward=segment_d_model * 4,
-            dropout=dropout,
-            max_seq_len=max_seq_len,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-        )
+        if not segment_encoder_type:
+            raise ValueError("segment_encoder_type 不能为空")
+        self.segment_encoder_type = segment_encoder_type.lower()
+
+        if self.segment_encoder_type == "transformer":
+            self.segment_encoder = GazeTransformerEncoder(
+                input_dim=input_dim,
+                d_model=segment_d_model,
+                nhead=segment_nhead,
+                num_layers=segment_num_layers,
+                dim_feedforward=segment_d_model * 4,
+                dropout=dropout,
+                max_seq_len=max_seq_len,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+            )
+        elif self.segment_encoder_type == "cnn1d":
+            self.segment_encoder = GazeCnnEncoder(
+                input_dim=input_dim,
+                channels=segment_cnn_channels or [],
+                kernel_sizes=segment_cnn_kernel_sizes or [],
+                dropout=dropout,
+                output_dim=segment_d_model,
+            )
+        elif self.segment_encoder_type in {"rnn", "lstm", "gru", "bilstm"}:
+            rnn_type = "lstm" if self.segment_encoder_type == "bilstm" else self.segment_encoder_type
+            hidden_size = segment_rnn_hidden_size or segment_d_model
+            self.segment_encoder = GazeRnnEncoder(
+                rnn_type=rnn_type,
+                input_dim=input_dim,
+                hidden_size=hidden_size,
+                num_layers=segment_rnn_layers,
+                dropout=segment_rnn_dropout,
+                bidirectional=self.segment_encoder_type == "bilstm",
+                output_dim=segment_d_model,
+            )
+        else:
+            raise ValueError(f"不支持的片段编码器类型: {self.segment_encoder_type}")
         
         # 2. 片段->任务聚合
         self.segment_aggregator = AttentionPooling(

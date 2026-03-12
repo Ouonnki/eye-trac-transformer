@@ -16,7 +16,8 @@
     "task_nhead": 4,
     "task_num_layers": 2,
     "attention_dim": 32,
-    "dropout": 0.1
+    "dropout": 0.1,
+    "segment_encoder_type": "transformer"
   },
   "training": {
     "batch_size": 8,

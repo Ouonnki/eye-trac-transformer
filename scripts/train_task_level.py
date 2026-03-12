@@ -506,6 +506,16 @@ def main():
     head_type = config['model'].get('head_type', 'classification')
     logger.info(f"使用任务嵌入: {use_task_embedding}")
     logger.info(f"预测头类型: {head_type}")
+    if 'segment_encoder_type' not in config['model']:
+        raise ValueError("配置缺少 model.segment_encoder_type，请显式设置为 transformer/cnn1d/rnn/lstm/gru/bilstm")
+    segment_encoder_type = config['model']['segment_encoder_type']
+    logger.info(f"片段编码器类型: {segment_encoder_type}")
+
+    segment_rnn_hidden_size = config['model'].get('segment_rnn_hidden_size', config['model']['segment_d_model'])
+    segment_rnn_layers = config['model'].get('segment_rnn_layers', 1)
+    segment_rnn_dropout = config['model'].get('segment_rnn_dropout', config['model'].get('dropout', 0.0))
+    segment_cnn_channels = config['model'].get('segment_cnn_channels', None)
+    segment_cnn_kernel_sizes = config['model'].get('segment_cnn_kernel_sizes', None)
     model = TaskLevelEncoder(
         input_dim=config['sequence']['input_dim'],
         max_seq_len=config['sequence']['max_seq_len'],
@@ -513,6 +523,12 @@ def main():
         segment_d_model=config['model']['segment_d_model'],
         segment_nhead=config['model']['segment_nhead'],
         segment_num_layers=config['model']['segment_num_layers'],
+        segment_encoder_type=segment_encoder_type,
+        segment_rnn_hidden_size=segment_rnn_hidden_size,
+        segment_rnn_layers=segment_rnn_layers,
+        segment_rnn_dropout=segment_rnn_dropout,
+        segment_cnn_channels=segment_cnn_channels,
+        segment_cnn_kernel_sizes=segment_cnn_kernel_sizes,
         attention_dim=config['model']['attention_dim'],
         task_embedding_dim=config['model']['task_embedding_dim'],
         use_task_embedding=use_task_embedding,

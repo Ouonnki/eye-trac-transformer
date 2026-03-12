@@ -23,7 +23,8 @@
     "use_task_embedding": true,
     "dropout": 0.0,
     "num_classes": 3,
-    "use_gradient_checkpointing": false
+    "use_gradient_checkpointing": false,
+    "segment_encoder_type": "transformer"
   },
   "training": {
     "batch_size": 8,

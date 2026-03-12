@@ -18,7 +18,8 @@
     "attention_dim": 64,
     "dropout": 0.1,
     "use_task_embedding": true,
-    "task_embedding_dim": 2
+    "task_embedding_dim": 2,
+    "segment_encoder_type": "transformer"
   },
   "training": {
     "batch_size": 8,

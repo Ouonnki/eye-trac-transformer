@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-构建任务嵌入消融对比报表（Excel）
+构建任务嵌入消融/单模型/多模型对比报表（Excel）
 
 输入:
-- baseline（不带任务嵌入）结果 (test_results.json 或其所在目录)
-- baseline + task（带任务嵌入）结果 (test_results.json 或其所在目录)
-- 可选 random baseline 结果 (random_baseline_results.json 或其所在目录)
+- 消融模式：baseline（不带任务嵌入）结果 + baseline + task 结果
+- 单模型模式：单个 test_results.json 或其所在目录
+- 多模型模式：多个 test_results.json 或其所在目录（逗号分隔）
 
 输出:
-- 每个可用分布生成 3~4 行（Baseline/Baseline + task/差值%，可选随机行）的 Excel 表格
+- 消融模式：每个分布 3~4 行（Baseline/Baseline + task/差值%，可选随机行）
+- 单模型模式：每个分布 1 行（编码器 + 指标）
+- 多模型模式：长表汇总（编码器 + 分布 + 指标）
 """
 
 import argparse
@@ -38,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.models.task_level_dataset import TaskLevelGazeDataset, TaskLevelSequenceConfig, task_level_collate_fn
 from src.models.task_level_model import TaskLevelEncoder
+from src.models.losses import decode_ordinal_logits, ordinal_probs_to_class_probs
 
 
 METRIC_COLUMNS = [
@@ -66,20 +69,38 @@ SPLIT_LABELS = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="构建任务嵌入消融报表",
+        description="构建任务嵌入消融/单模型/多模型报表",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--baseline-results",
         type=str,
-        required=True,
+        default=None,
         help="不带任务嵌入结果路径（test_results.json 或其所在目录）",
     )
     parser.add_argument(
         "--task-results",
         type=str,
-        required=True,
+        default=None,
         help="带任务嵌入结果路径（test_results.json 或其所在目录）",
+    )
+    parser.add_argument(
+        "--single-results",
+        type=str,
+        default=None,
+        help="单模型结果路径（test_results.json 或其所在目录）",
+    )
+    parser.add_argument(
+        "--multi-results",
+        type=str,
+        default=None,
+        help="多模型结果路径列表（逗号分隔，每个为 test_results.json 或其所在目录）",
+    )
+    parser.add_argument(
+        "--encoder-name",
+        type=str,
+        default=None,
+        help="单模型模式下覆盖编码器名称（默认从 config.json 推断）",
     )
     parser.add_argument(
         "--random-results",
@@ -97,7 +118,7 @@ def parse_args() -> argparse.Namespace:
         "--output-xlsx",
         type=str,
         default=None,
-        help="输出 Excel 路径；默认输出到 outputs/task_level/task_embedding_comparison_<timestamp>.xlsx",
+        help="输出 Excel 路径；默认根据模式输出到 outputs/task_level/ 下",
     )
     return parser.parse_args()
 
@@ -158,6 +179,27 @@ def get_ordered_splits(
     preferred = [split for split in SPLIT_ORDER if split in shared]
     extras = sorted(split for split in shared if split not in SPLIT_ORDER)
     return preferred + extras
+
+
+def get_ordered_splits_single(data: Dict[str, Dict[str, Any]]) -> List[str]:
+    splits = list(data.keys())
+    preferred = [split for split in SPLIT_ORDER if split in splits]
+    extras = sorted(split for split in splits if split not in SPLIT_ORDER)
+    return preferred + extras
+
+
+def load_run_config(run_dir: Path) -> Optional[Dict[str, Any]]:
+    config_path = run_dir / "config.json"
+    if not config_path.exists():
+        return None
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def infer_encoder_name(run_dir: Path, config: Optional[Dict[str, Any]] = None) -> str:
+    if config and "model" in config and "segment_encoder_type" in config["model"]:
+        return str(config["model"]["segment_encoder_type"])
+    return run_dir.name
 
 
 class _Subset:
@@ -274,7 +316,17 @@ def recover_indist_metrics_from_run_dir(run_dir: Path) -> Dict[str, Any]:
         pin_memory=False,
     )
 
+    if "segment_encoder_type" not in config["model"]:
+        raise ValueError("config.json 缺少 model.segment_encoder_type，无法回算 Val")
     use_task_embedding = config["model"].get("use_task_embedding", True)
+    head_type = config["model"].get("head_type", "classification")
+    segment_encoder_type = config["model"]["segment_encoder_type"]
+    segment_rnn_hidden_size = config["model"].get("segment_rnn_hidden_size", config["model"]["segment_d_model"])
+    segment_rnn_layers = config["model"].get("segment_rnn_layers", 1)
+    segment_rnn_dropout = config["model"].get("segment_rnn_dropout", config["model"].get("dropout", 0.0))
+    segment_cnn_channels = config["model"].get("segment_cnn_channels", None)
+    segment_cnn_kernel_sizes = config["model"].get("segment_cnn_kernel_sizes", None)
+
     model = TaskLevelEncoder(
         input_dim=config["sequence"]["input_dim"],
         max_seq_len=config["sequence"]["max_seq_len"],
@@ -282,15 +334,24 @@ def recover_indist_metrics_from_run_dir(run_dir: Path) -> Dict[str, Any]:
         segment_d_model=config["model"]["segment_d_model"],
         segment_nhead=config["model"]["segment_nhead"],
         segment_num_layers=config["model"]["segment_num_layers"],
+        segment_encoder_type=segment_encoder_type,
+        segment_rnn_hidden_size=segment_rnn_hidden_size,
+        segment_rnn_layers=segment_rnn_layers,
+        segment_rnn_dropout=segment_rnn_dropout,
+        segment_cnn_channels=segment_cnn_channels,
+        segment_cnn_kernel_sizes=segment_cnn_kernel_sizes,
         attention_dim=config["model"]["attention_dim"],
         task_embedding_dim=config["model"]["task_embedding_dim"],
         use_task_embedding=use_task_embedding,
         dropout=config["model"]["dropout"],
         num_classes=config["model"]["num_classes"],
+        head_type=head_type,
     )
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict)
+    device = torch.device("cpu")
+    model.to(device)
     model.eval()
 
     all_preds: List[int] = []
@@ -299,17 +360,26 @@ def recover_indist_metrics_from_run_dir(run_dir: Path) -> Dict[str, Any]:
 
     with torch.no_grad():
         for batch in val_loader:
-            segments = batch["segments"]
-            segment_mask = batch["segment_mask"]
-            task_conditions = batch["task_conditions"]
-            labels = batch["labels"]
+            segments = batch["segments"].to(device)
+            segment_mask = batch["segment_mask"].to(device)
+            task_conditions = batch["task_conditions"].to(device)
+            labels = batch["labels"].to(device)
 
             segment_seq_mask = batch.get("segment_seq_mask")
             if segment_seq_mask is not None:
                 segment_seq_mask = segment_seq_mask.to(device)
             logits = model(segments, segment_mask, task_conditions, segment_seq_mask)
-            probs = torch.softmax(logits, dim=1)
-            preds = torch.argmax(logits, dim=1)
+            if head_type == "ordinal":
+                thresholds = config["training"].get("ordinal_thresholds", None)
+                if thresholds is None:
+                    thresholds = [0.5] * (config["model"]["num_classes"] - 1)
+                thresholds_tensor = torch.tensor(thresholds, dtype=logits.dtype, device=logits.device)
+                preds = decode_ordinal_logits(logits, thresholds_tensor)
+                cum_probs = torch.sigmoid(logits)
+                probs = ordinal_probs_to_class_probs(cum_probs)
+            else:
+                probs = torch.softmax(logits, dim=1)
+                preds = torch.argmax(logits, dim=1)
 
             all_labels.extend(labels.cpu().numpy().astype(int).tolist())
             all_preds.extend(preds.cpu().numpy().astype(int).tolist())
@@ -476,8 +546,102 @@ def build_rows(
     return rows
 
 
+def build_single_rows(
+    data: Dict[str, Dict[str, Any]],
+    encoder_name: str,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for split in get_ordered_splits_single(data):
+        metrics = compute_metrics(data[split], f"{split}/{encoder_name}")
+        row = {"分布": SPLIT_LABELS.get(split, split), "编码器": encoder_name}
+        for col in METRIC_COLUMNS:
+            row[col] = round(metrics[col], 6)
+        rows.append(row)
+    return rows
+
+
+def build_multi_rows(
+    all_data: List[Dict[str, Dict[str, Any]]],
+    encoder_names: List[str],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for data, name in zip(all_data, encoder_names):
+        rows.extend(build_single_rows(data, name))
+    return rows
+
+
 def main() -> None:
     args = parse_args()
+
+    if args.single_results or args.multi_results:
+        if args.baseline_results or args.task_results:
+            raise ValueError("单模型/多模型模式下不允许传 --baseline-results 或 --task-results")
+        if args.single_results and args.multi_results:
+            raise ValueError("单模型与多模型模式不能同时使用")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        if args.single_results:
+            results_path = resolve_results_path(args.single_results, "test_results.json")
+            run_dir = infer_run_dir(args.single_results)
+            payload = load_json(str(results_path))
+            data = extract_split_results(payload)
+            if "InDist" not in data:
+                try:
+                    data["InDist"] = recover_indist_metrics_from_run_dir(run_dir)
+                    print(f"[INFO] 单模型 Val 回算完成: n={len(data['InDist']['labels'])}")
+                except Exception as exc:
+                    print(f"[WARN] 单模型 Val 回算失败: {exc}")
+
+            config = load_run_config(run_dir)
+            encoder_name = args.encoder_name or infer_encoder_name(run_dir, config)
+            rows = build_single_rows(data, encoder_name)
+            df = pd.DataFrame(rows)
+
+            if args.output_xlsx is None:
+                output_path = Path("outputs/task_level") / f"single_model_report_{encoder_name}_{timestamp}.xlsx"
+            else:
+                output_path = Path(args.output_xlsx)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name="single_model_report")
+            print(f"[INFO] 单模型报表已生成: {output_path}")
+            return
+
+        results_list = [p.strip() for p in args.multi_results.split(",") if p.strip()]
+        if not results_list:
+            raise ValueError("--multi-results 为空")
+        all_data: List[Dict[str, Dict[str, Any]]] = []
+        encoder_names: List[str] = []
+        for path_like in results_list:
+            results_path = resolve_results_path(path_like, "test_results.json")
+            run_dir = infer_run_dir(path_like)
+            payload = load_json(str(results_path))
+            data = extract_split_results(payload)
+            if "InDist" not in data:
+                try:
+                    data["InDist"] = recover_indist_metrics_from_run_dir(run_dir)
+                    print(f"[INFO] 多模型 Val 回算完成: {run_dir}")
+                except Exception as exc:
+                    print(f"[WARN] 多模型 Val 回算失败: {run_dir} ({exc})")
+            config = load_run_config(run_dir)
+            encoder_names.append(infer_encoder_name(run_dir, config))
+            all_data.append(data)
+
+        rows = build_multi_rows(all_data, encoder_names)
+        df = pd.DataFrame(rows)
+        if args.output_xlsx is None:
+            output_path = Path("outputs/task_level") / f"encoder_comparison_{timestamp}.xlsx"
+        else:
+            output_path = Path(args.output_xlsx)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="encoder_comparison")
+        print(f"[INFO] 多模型对比报表已生成: {output_path}")
+        return
+
+    if not args.baseline_results or not args.task_results:
+        raise ValueError("消融模式需要同时提供 --baseline-results 与 --task-results")
 
     baseline_path = resolve_results_path(args.baseline_results, "test_results.json")
     task_path = resolve_results_path(args.task_results, "test_results.json")

@@ -24,7 +24,8 @@
     "dropout": 0.0,
     "num_classes": 3,
     "use_gradient_checkpointing": false,
-    "head_type": "ordinal"
+    "head_type": "ordinal",
+    "segment_encoder_type": "transformer"
   },
   "training": {
     "batch_size": 16,

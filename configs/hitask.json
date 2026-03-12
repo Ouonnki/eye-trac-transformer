@@ -26,11 +26,12 @@
     "dropout": 0.25,
     "use_task_embedding": true,
     "task_embedding_mode": "dynamic",
-    "task_embedding_dim": 16
+    "task_embedding_dim": 16,
+    "segment_encoder_type": "transformer"
   },
   "training": {
     "batch_size": 8,
-    "learning_rate": 0.00008,
+    "learning_rate": 8e-05,
     "weight_decay": 0.0005,
     "warmup_epochs": 5,
     "epochs": 400,

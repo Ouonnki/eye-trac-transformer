@@ -5,11 +5,12 @@
 包含用于层级 Transformer 的编码器组件。
 """
 
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
+from torch.nn.utils.rnn import pack_padded_sequence
 
 from src.config import ModelConfig
 from src.models.attention import AttentionPooling, PositionalEncoding
@@ -133,6 +134,166 @@ class GazeTransformerEncoder(nn.Module):
         # 取 [CLS] token 的输出
         output = self.norm(x[:, 0, :])  # (batch, d_model)
 
+        return output, None
+
+
+def _mask_to_lengths(mask: Optional[torch.Tensor], batch_size: int, seq_len: int) -> torch.Tensor:
+    if mask is None:
+        return torch.full((batch_size,), seq_len, dtype=torch.long)
+    lengths = mask.long().sum(dim=1)
+    lengths = torch.clamp(lengths, min=1)
+    return lengths
+
+
+class GazeCnnEncoder(nn.Module):
+    """
+    1D-CNN 片段编码器
+
+    输入: (batch, seq_len, input_dim)
+    输出: (batch, output_dim)
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        channels: List[int],
+        kernel_sizes: List[int],
+        dropout: float,
+        output_dim: int,
+    ):
+        super().__init__()
+        if not channels or not kernel_sizes:
+            raise ValueError("CNN 编码器配置缺少 channels 或 kernel_sizes")
+        if len(channels) != len(kernel_sizes):
+            raise ValueError("CNN 编码器 channels 与 kernel_sizes 长度必须一致")
+
+        layers: List[nn.Module] = []
+        in_channels = input_dim
+        for out_channels, kernel in zip(channels, kernel_sizes):
+            padding = kernel // 2
+            layers.append(nn.Conv1d(in_channels, out_channels, kernel, padding=padding))
+            layers.append(nn.GELU())
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            in_channels = out_channels
+        self.conv = nn.Sequential(*layers)
+
+        if in_channels != output_dim:
+            self.proj = nn.Linear(in_channels, output_dim)
+        else:
+            self.proj = nn.Identity()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        x = x.transpose(1, 2)  # (batch, input_dim, seq_len)
+        feats = self.conv(x)   # (batch, channels, seq_len)
+
+        if mask is not None:
+            mask_f = mask.float().unsqueeze(1)
+            feats = feats * mask_f
+            lengths = mask_f.sum(dim=2).clamp(min=1.0)
+            pooled = feats.sum(dim=2) / lengths
+        else:
+            pooled = feats.mean(dim=2)
+
+        output = self.proj(pooled)
+        return output, None
+
+
+class GazeRnnEncoder(nn.Module):
+    """
+    RNN/LSTM/GRU 片段编码器
+    """
+
+    def __init__(
+        self,
+        rnn_type: str,
+        input_dim: int,
+        hidden_size: int,
+        num_layers: int,
+        dropout: float,
+        bidirectional: bool,
+        output_dim: int,
+    ):
+        super().__init__()
+        if hidden_size <= 0:
+            raise ValueError("RNN 编码器 hidden_size 必须大于 0")
+        if num_layers <= 0:
+            raise ValueError("RNN 编码器 num_layers 必须大于 0")
+
+        rnn_dropout = dropout if num_layers > 1 else 0.0
+        rnn_type = rnn_type.lower()
+        if rnn_type == "rnn":
+            self.rnn = nn.RNN(
+                input_dim,
+                hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=rnn_dropout,
+                bidirectional=bidirectional,
+            )
+        elif rnn_type == "lstm":
+            self.rnn = nn.LSTM(
+                input_dim,
+                hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=rnn_dropout,
+                bidirectional=bidirectional,
+            )
+        elif rnn_type == "gru":
+            self.rnn = nn.GRU(
+                input_dim,
+                hidden_size,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=rnn_dropout,
+                bidirectional=bidirectional,
+            )
+        else:
+            raise ValueError(f"不支持的 RNN 类型: {rnn_type}")
+
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+
+        in_dim = hidden_size * self.num_directions
+        if in_dim != output_dim:
+            self.proj = nn.Linear(in_dim, output_dim)
+        else:
+            self.proj = nn.Identity()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        lengths = _mask_to_lengths(mask, x.size(0), x.size(1)).to(x.device)
+        packed = pack_padded_sequence(
+            x,
+            lengths.cpu(),
+            batch_first=True,
+            enforce_sorted=False,
+        )
+        outputs, state = self.rnn(packed)
+
+        if isinstance(state, tuple):
+            h_n = state[0]
+        else:
+            h_n = state
+
+        h_n = h_n.view(self.num_layers, self.num_directions, x.size(0), self.hidden_size)
+        last = h_n[-1]
+        if self.num_directions == 2:
+            reprs = torch.cat([last[0], last[1]], dim=-1)
+        else:
+            reprs = last[0]
+
+        output = self.proj(reprs)
         return output, None
 
 
