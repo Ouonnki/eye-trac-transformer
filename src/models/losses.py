@@ -9,6 +9,110 @@ import torch.nn.functional as F
 from typing import Optional
 
 
+def build_ordinal_targets(labels: torch.Tensor, num_classes: int) -> torch.Tensor:
+    """
+    将类别标签转换为序数学习的累计二值目标。
+
+    例：num_classes=3 时
+    - y=0 -> [0, 0]
+    - y=1 -> [1, 0]
+    - y=2 -> [1, 1]
+    """
+    if num_classes < 2:
+        raise ValueError("num_classes 必须 >= 2")
+    if labels.dim() != 1:
+        raise ValueError("labels 必须为一维张量")
+
+    thresholds = torch.arange(num_classes - 1, device=labels.device).unsqueeze(0)
+    targets = (labels.unsqueeze(1) > thresholds).to(torch.float32)
+    return targets
+
+
+def decode_ordinal_logits(
+    logits: torch.Tensor,
+    thresholds: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    将序数 logit 解码为离散类别标签。
+    """
+    if logits.dim() != 2:
+        raise ValueError("ordinal logits 必须为二维张量 (B, K-1)")
+
+    probs = torch.sigmoid(logits)
+    if thresholds is None:
+        thresholds = torch.full(
+            (logits.size(1),),
+            0.5,
+            dtype=probs.dtype,
+            device=probs.device,
+        )
+    else:
+        thresholds = thresholds.to(device=probs.device, dtype=probs.dtype)
+        if thresholds.dim() != 1 or thresholds.numel() != logits.size(1):
+            raise ValueError("thresholds 维度必须与 logits 的第二维一致")
+
+    preds = (probs > thresholds.unsqueeze(0)).sum(dim=1).to(torch.long)
+    return preds
+
+
+def ordinal_probs_to_class_probs(cum_probs: torch.Tensor) -> torch.Tensor:
+    """
+    将累计概率 P(y>k) 转换为每个类别的概率分布 P(y=c)。
+    """
+    if cum_probs.dim() != 2:
+        raise ValueError("cum_probs 必须为二维张量 (B, K-1)")
+
+    # 累计概率理论上应满足非增约束，这里做一次投影以避免数值异常。
+    monotonic = cum_probs.clamp(0.0, 1.0).clone()
+    for i in range(1, monotonic.size(1)):
+        monotonic[:, i] = torch.minimum(monotonic[:, i - 1], monotonic[:, i])
+
+    if monotonic.size(1) == 0:
+        return torch.ones((monotonic.size(0), 1), dtype=monotonic.dtype, device=monotonic.device)
+
+    class_probs = []
+    class_probs.append(1.0 - monotonic[:, 0])
+    for i in range(1, monotonic.size(1)):
+        class_probs.append(monotonic[:, i - 1] - monotonic[:, i])
+    class_probs.append(monotonic[:, -1])
+
+    probs = torch.stack(class_probs, dim=1).clamp(min=0.0)
+    probs = probs / probs.sum(dim=1, keepdim=True).clamp(min=1e-8)
+    return probs
+
+
+class OrdinalLoss(nn.Module):
+    """
+    序数学习损失（CORAL 风格 BCE）。
+    """
+
+    def __init__(self, pos_weight: Optional[torch.Tensor] = None, reduction: str = 'mean'):
+        super().__init__()
+        self.reduction = reduction
+        if pos_weight is not None:
+            self.register_buffer('pos_weight', pos_weight)
+        else:
+            self.pos_weight = None
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if logits.shape != targets.shape:
+            raise ValueError("OrdinalLoss 的 logits 与 targets 形状必须一致")
+        if logits.dim() != 2:
+            raise ValueError("OrdinalLoss 输入必须是二维张量 (B, K-1)")
+
+        pos_weight = self.pos_weight
+        if pos_weight is not None and pos_weight.device != logits.device:
+            pos_weight = pos_weight.to(logits.device)
+
+        loss = F.binary_cross_entropy_with_logits(
+            logits,
+            targets.to(dtype=logits.dtype),
+            pos_weight=pos_weight,
+            reduction=self.reduction,
+        )
+        return loss
+
+
 class FocalLoss(nn.Module):
     """
     Focal Loss for addressing class imbalance.

@@ -1,0 +1,53 @@
+{
+  "experiment": {
+    "name": "task_level_overfit",
+    "output_dir": "outputs/task_level",
+    "random_seed": 42,
+    "train_subjects": 10,
+    "train_tasks": 5,
+    "n_repeats": 1
+  },
+  "sequence": {
+    "max_seq_len": 300,
+    "max_segments": 25,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "input_dim": 7
+  },
+  "model": {
+    "segment_d_model": 128,
+    "segment_nhead": 4,
+    "segment_num_layers": 4,
+    "attention_dim": 32,
+    "task_embedding_dim": 2,
+    "use_task_embedding": true,
+    "dropout": 0.0,
+    "num_classes": 3,
+    "use_gradient_checkpointing": true
+  },
+  "training": {
+    "batch_size": 1,
+    "epochs": 30,
+    "lr": 0.003,
+    "weight_decay": 0.0,
+    "grad_clip": 1.0,
+    "patience": 30,
+    "early_stop_metric": "f1_macro",
+    "train_val_split": 0.8,
+    "use_class_weights": false,
+    "num_workers": 0,
+    "skip_test_evaluation": true,
+    "class_weights_mode": "auto",
+    "class_weights": [2.2, 0.4484, 1.9],
+    "use_focal_loss": false,
+    "focal_loss_alpha": [0.25, 0.25, 0.25],
+    "focal_loss_gamma": 2.0,
+    "use_balanced_sampler": true,
+    "balanced_sampler_mode": "effective_num",
+    "balanced_sampler_beta": 0.999,
+    "label_smoothing": 0.0
+  },
+  "data": {
+    "processed_data_path": "data/processed/processed_data_subject_norm.pkl"
+  }
+}

@@ -133,9 +133,11 @@ class TaskLevelGazeDataset(Dataset):
         
         # 任务条件 (5维)
         tc = sample['task_conditions']
+        number_range_max = tc.get('number_range', (1, 25))[1]
+        continuous_thinking = 1 if number_range_max == 99 else 0
         task_conditions = np.array([
             self._get_grid_scale(tc.get('grid_size', 25)),
-            1 if tc.get('number_range', (1, 25))[1] == 99 else 0,
+            continuous_thinking,
             int(tc.get('click_disappear', False)),
             int(tc.get('grid_distractor_count', 0) > 0),
             int(tc.get('number_distractor_count', 0) > 0),

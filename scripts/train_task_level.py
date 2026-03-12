@@ -211,6 +211,28 @@ def compute_sample_weights(labels: np.ndarray, mode: str = "effective_num", beta
     return sample_weights
 
 
+def compute_ordinal_pos_weight(
+    labels: np.ndarray,
+    num_classes: int,
+    clip_min: float = 0.5,
+    clip_max: float = 5.0,
+) -> torch.Tensor:
+    """
+    计算序数学习各阈值的 BCE 正样本权重（neg/pos）。
+    """
+    weights = []
+    for k in range(num_classes - 1):
+        pos = float((labels > k).sum())
+        neg = float((labels <= k).sum())
+        if pos <= 0:
+            w = 1.0
+        else:
+            w = neg / pos
+        w = float(np.clip(w, clip_min, clip_max))
+        weights.append(w)
+    return torch.tensor(weights, dtype=torch.float32)
+
+
 def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, seed=42):
     """
     2×2划分：被试维度 × 题目维度
@@ -408,6 +430,8 @@ def main():
     # 检查是否使用平衡采样
     use_balanced_sampler = config['training'].get('use_balanced_sampler', False)
     
+    num_workers = config['training'].get('num_workers', 4)
+
     if use_balanced_sampler:
         # 计算样本采样权重
         sampler_mode = config['training'].get('balanced_sampler_mode', 'effective_num')
@@ -434,7 +458,7 @@ def main():
             batch_size=config['training']['batch_size'],
             sampler=sampler,
             collate_fn=task_level_collate_fn,
-            num_workers=4,
+            num_workers=num_workers,
             pin_memory=True,
         )
     else:
@@ -444,42 +468,44 @@ def main():
             batch_size=config['training']['batch_size'],
             shuffle=True,
             collate_fn=task_level_collate_fn,
-            num_workers=4,
+            num_workers=num_workers,
             pin_memory=True,
         )
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['training']['batch_size'],
         collate_fn=task_level_collate_fn,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
     )
     test1_loader = DataLoader(
         test1_dataset,
         batch_size=config['training']['batch_size'],
         collate_fn=task_level_collate_fn,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
     )
     test2_loader = DataLoader(
         test2_dataset,
         batch_size=config['training']['batch_size'],
         collate_fn=task_level_collate_fn,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
     )
     test3_loader = DataLoader(
         test3_dataset,
         batch_size=config['training']['batch_size'],
         collate_fn=task_level_collate_fn,
-        num_workers=4,
+        num_workers=num_workers,
         pin_memory=True,
     )
     
     # 创建模型
     logger.info("创建模型...")
     use_task_embedding = config['model'].get('use_task_embedding', True)
+    head_type = config['model'].get('head_type', 'classification')
     logger.info(f"使用任务嵌入: {use_task_embedding}")
+    logger.info(f"预测头类型: {head_type}")
     model = TaskLevelEncoder(
         input_dim=config['sequence']['input_dim'],
         max_seq_len=config['sequence']['max_seq_len'],
@@ -492,6 +518,7 @@ def main():
         use_task_embedding=use_task_embedding,
         dropout=config['model']['dropout'],
         num_classes=config['model']['num_classes'],
+        head_type=head_type,
     ).to(device)
     
     # 统计参数量
@@ -503,6 +530,33 @@ def main():
     use_focal_loss = config['training'].get('use_focal_loss', False)
     focal_loss_alpha = config['training'].get('focal_loss_alpha', None)
     focal_loss_gamma = config['training'].get('focal_loss_gamma', 2.0)
+    ordinal_thresholds = config['training'].get('ordinal_thresholds', None)
+    ordinal_pos_weight = None
+    if head_type == "ordinal":
+        pos_weight_mode = config['training'].get('ordinal_pos_weight_mode', 'auto')
+        if pos_weight_mode == 'none':
+            ordinal_pos_weight = None
+            logger.info("序数损失不使用 pos_weight")
+        elif pos_weight_mode == 'manual':
+            manual_w = config['training'].get('ordinal_pos_weight', None)
+            if manual_w is None:
+                raise ValueError("ordinal_pos_weight_mode=manual 时必须提供 training.ordinal_pos_weight")
+            ordinal_pos_weight = torch.tensor(manual_w, dtype=torch.float32)
+            logger.info(f"序数损失使用手动 pos_weight: {ordinal_pos_weight.tolist()}")
+        elif pos_weight_mode == 'auto':
+            clip_cfg = config['training'].get('ordinal_pos_weight_clip', [0.5, 3.0])
+            clip_min, clip_max = float(clip_cfg[0]), float(clip_cfg[1])
+            ordinal_pos_weight = compute_ordinal_pos_weight(
+                labels=np.array(train_labels),
+                num_classes=config['model']['num_classes'],
+                clip_min=clip_min,
+                clip_max=clip_max,
+            )
+            logger.info(
+                f"序数损失自动 pos_weight: {ordinal_pos_weight.tolist()} (clip=[{clip_min}, {clip_max}])"
+            )
+        else:
+            raise ValueError(f"不支持的 ordinal_pos_weight_mode: {pos_weight_mode}")
     
     label_smoothing = config['training'].get('label_smoothing', 0.0)
     
@@ -510,6 +564,7 @@ def main():
         model=model,
         device=device,
         num_classes=config['model']['num_classes'],
+        head_type=head_type,
         class_weights=class_weights if config['training']['use_class_weights'] else None,
         lr=config['training']['lr'],
         weight_decay=config['training']['weight_decay'],
@@ -518,11 +573,13 @@ def main():
         focal_loss_alpha=focal_loss_alpha,
         focal_loss_gamma=focal_loss_gamma,
         label_smoothing=label_smoothing,
+        ordinal_thresholds=ordinal_thresholds,
+        ordinal_pos_weight=ordinal_pos_weight,
     )
     
     # 训练循环
     early_stop_metric = config['training'].get('early_stop_metric', 'f1_weighted')
-    best_val_metric = 0.0
+    best_val_metric = -1.0
     patience_counter = 0
     history = {
         'train_loss': [], 'train_acc': [], 'train_f1': [], 'train_f1_macro': [],
@@ -581,6 +638,28 @@ def main():
     # 加载最佳模型进行测试
     print(f"\n加载最佳模型 (Best Val {early_stop_metric}: {best_val_metric:.4f}) 进行测试...")
     trainer.load_checkpoint(output_dir / 'best_model.pt')
+
+    skip_test_evaluation = config['training'].get('skip_test_evaluation', False)
+    if skip_test_evaluation:
+        # 保存配置和历史
+        with open(output_dir / 'config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        with open(output_dir / 'history.json', 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        # 绘制并保存训练曲线
+        best_epoch = np.argmax(history[f'val_{early_stop_metric}']) + 1 if history[f'val_{early_stop_metric}'] else 0
+        plot_training_curves(history, output_dir / 'training_curves.png', best_epoch, early_stop_metric)
+        
+        logger.info("已跳过测试评估（skip_test_evaluation=true）")
+        logger.info(f"训练完成! 结果保存在: {output_dir}")
+        logger.info("产出文件:")
+        logger.info(f"  - best_model.pt: 最佳模型检查点")
+        logger.info(f"  - config.json: 配置文件")
+        logger.info(f"  - history.json: 训练历史")
+        logger.info(f"  - training_curves.png: 训练曲线图")
+        return
     
     # 定义评估集（包含同分布验证集 + 三个测试分布）
     eval_sets = [

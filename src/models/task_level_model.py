@@ -31,7 +31,9 @@ class TaskLevelEncoder(nn.Module):
         - segments: (B, 25, 300, 7) 眼动序列
         - segment_mask: (B, 25) 有效片段掩码
         - task_conditions: (B, 5) 任务条件
-    输出: (B, 3) 任务级分类logits
+    输出:
+        - classification 模式: (B, 3) 任务级分类 logits
+        - ordinal 模式: (B, 2) 序数累计 logits（当类别数为3）
     """
 
     def __init__(
@@ -47,6 +49,7 @@ class TaskLevelEncoder(nn.Module):
         use_task_embedding: bool = True,
         dropout: float = 0.5,
         num_classes: int = 3,
+        head_type: str = "classification",
         use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
@@ -54,6 +57,12 @@ class TaskLevelEncoder(nn.Module):
         self.max_segments = max_segments
         self.segment_d_model = segment_d_model
         self.use_task_embedding = use_task_embedding
+        self.num_classes = num_classes
+        self.head_type = head_type
+        if self.head_type not in {"classification", "ordinal"}:
+            raise ValueError(f"不支持的 head_type: {self.head_type}")
+        if self.head_type == "ordinal" and self.num_classes < 2:
+            raise ValueError("ordinal 模式要求 num_classes >= 2")
         
         # 1. 片段编码器
         self.segment_encoder = GazeTransformerEncoder(
@@ -86,10 +95,11 @@ class TaskLevelEncoder(nn.Module):
         
         # 4. 预测头 (96 + 10 = 106 -> 3, 或 96 -> 3 当不使用任务嵌入时)
         head_input_dim = segment_d_model + self.task_emb_output_dim
+        head_output_dim = num_classes if self.head_type == "classification" else (num_classes - 1)
         self.prediction_head = PredictionHead(
             input_dim=head_input_dim,
             hidden_dim=head_input_dim // 2,  # 53
-            output_dim=num_classes,
+            output_dim=head_output_dim,
             dropout=dropout,
         )
         
@@ -116,11 +126,13 @@ class TaskLevelEncoder(nn.Module):
         Args:
             segments: (B, S, 300, 7) 眼动序列（S为每个任务片段数）
             segment_mask: (B, S) 有效片段掩码
-            task_conditions: (B, 5) 任务条件 [grid_scale, continuous_thinking, click_disappear, has_distractor, has_task_distractor]
+            task_conditions: (B, 5) 任务条件 [grid_scale, continuous_thinking(0=1-N,1=1-99), click_disappear, has_distractor, has_task_distractor]
             segment_seq_mask: (B, S, 300) 片段内有效时步掩码
         
         Returns:
-            logits: (B, 3) 分类logits
+            logits:
+                - classification: (B, C)
+                - ordinal: (B, C-1)
         """
         B = segments.size(0)
         

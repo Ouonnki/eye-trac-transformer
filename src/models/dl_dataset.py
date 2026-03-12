@@ -327,7 +327,7 @@ class HierarchicalGazeDataset(Dataset):
 
         Returns:
             (max_tasks, 5) 的任务条件数组
-            每行格式: [grid_scale, continuous_thinking, click_disappear, has_distractor, has_task_distractor]
+            每行格式: [grid_scale, continuous_thinking(0/1), click_disappear, has_distractor, has_task_distractor]
         """
         task_conditions = np.zeros((self.config.max_tasks, 5), dtype=np.int64)
 

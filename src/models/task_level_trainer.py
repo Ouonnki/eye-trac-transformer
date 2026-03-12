@@ -14,7 +14,14 @@ import numpy as np
 from sklearn.metrics import f1_score, precision_score, recall_score
 
 from src.models.task_level_model import TaskLevelEncoder
-from src.models.losses import FocalLoss, WeightedFocalLoss
+from src.models.losses import (
+    FocalLoss,
+    WeightedFocalLoss,
+    OrdinalLoss,
+    build_ordinal_targets,
+    decode_ordinal_logits,
+    ordinal_probs_to_class_probs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +34,7 @@ class TaskLevelTrainer:
         model: TaskLevelEncoder,
         device: torch.device,
         num_classes: int = 3,
+        head_type: str = "classification",
         class_weights: Optional[torch.Tensor] = None,
         lr: float = 1e-4,
         weight_decay: float = 0.001,
@@ -35,13 +43,42 @@ class TaskLevelTrainer:
         focal_loss_alpha: Optional[List[float]] = None,
         focal_loss_gamma: float = 2.0,
         label_smoothing: float = 0.0,
+        ordinal_thresholds: Optional[List[float]] = None,
+        ordinal_pos_weight: Optional[torch.Tensor] = None,
     ):
         self.model = model
         self.device = device
         self.grad_clip = grad_clip
+        self.num_classes = num_classes
+        self.head_type = head_type
+
+        if self.head_type not in {"classification", "ordinal"}:
+            raise ValueError(f"不支持的 head_type: {self.head_type}")
+
+        if self.head_type == "ordinal":
+            if self.num_classes < 2:
+                raise ValueError("ordinal 模式要求 num_classes >= 2")
+            if ordinal_thresholds is None:
+                ordinal_thresholds = [0.5] * (self.num_classes - 1)
+            if len(ordinal_thresholds) != self.num_classes - 1:
+                raise ValueError("ordinal_thresholds 长度必须为 num_classes - 1")
+            self.ordinal_thresholds = ordinal_thresholds
+        else:
+            self.ordinal_thresholds = None
         
         # 损失函数
-        if use_focal_loss:
+        if self.head_type == "ordinal":
+            self.criterion = OrdinalLoss(
+                pos_weight=ordinal_pos_weight,
+                reduction='mean',
+            )
+            if ordinal_pos_weight is not None:
+                logger.info(
+                    f"使用 OrdinalLoss (thresholds={self.ordinal_thresholds}, pos_weight={ordinal_pos_weight.tolist()})"
+                )
+            else:
+                logger.info(f"使用 OrdinalLoss (thresholds={self.ordinal_thresholds})")
+        elif use_focal_loss:
             # 使用 Focal Loss（注意：FocalLoss 不支持 label_smoothing）
             if focal_loss_alpha is not None:
                 alpha_tensor = torch.tensor(focal_loss_alpha, dtype=torch.float32)
@@ -77,6 +114,13 @@ class TaskLevelTrainer:
             self.optimizer, mode='min', patience=10, factor=0.5
         )
 
+    def _ordinal_thresholds_tensor(self, logits: torch.Tensor) -> torch.Tensor:
+        return torch.tensor(
+            self.ordinal_thresholds,
+            dtype=logits.dtype,
+            device=logits.device,
+        )
+
     def train_epoch(self, dataloader: DataLoader, epoch: int, total_epochs: int) -> Dict[str, float]:
         """训练一个epoch"""
         self.model.train()
@@ -102,7 +146,16 @@ class TaskLevelTrainer:
                 task_conditions,
                 segment_seq_mask
             )
-            loss = self.criterion(logits, labels)
+            if self.head_type == "ordinal":
+                ordinal_targets = build_ordinal_targets(labels, self.num_classes)
+                loss = self.criterion(logits, ordinal_targets)
+                pred = decode_ordinal_logits(
+                    logits,
+                    thresholds=self._ordinal_thresholds_tensor(logits),
+                )
+            else:
+                loss = self.criterion(logits, labels)
+                pred = logits.argmax(dim=1)
             
             loss.backward()
             
@@ -113,7 +166,6 @@ class TaskLevelTrainer:
             self.optimizer.step()
             
             total_loss += loss.item()
-            pred = logits.argmax(dim=1)
             all_preds.extend(pred.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             
@@ -160,11 +212,21 @@ class TaskLevelTrainer:
                 task_conditions,
                 segment_seq_mask
             )
-            loss = self.criterion(logits, labels)
+            if self.head_type == "ordinal":
+                ordinal_targets = build_ordinal_targets(labels, self.num_classes)
+                loss = self.criterion(logits, ordinal_targets)
+                pred = decode_ordinal_logits(
+                    logits,
+                    thresholds=self._ordinal_thresholds_tensor(logits),
+                )
+                cum_probs = torch.sigmoid(logits)
+                probs = ordinal_probs_to_class_probs(cum_probs)
+            else:
+                loss = self.criterion(logits, labels)
+                pred = logits.argmax(dim=1)
+                probs = torch.softmax(logits, dim=1)
             
             total_loss += loss.item()
-            pred = logits.argmax(dim=1)
-            probs = torch.softmax(logits, dim=1)
             all_preds.extend(pred.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())

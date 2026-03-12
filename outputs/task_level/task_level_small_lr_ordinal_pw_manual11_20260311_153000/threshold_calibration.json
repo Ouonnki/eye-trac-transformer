@@ -1,0 +1,87 @@
+{
+  "results_path": "outputs/task_level/task_level_small_lr_ordinal_pw_manual11_20260311_153000/test_results.json",
+  "search_grid": {
+    "start": 0.2,
+    "end": 0.8,
+    "step": 0.01
+  },
+  "best_thresholds": [
+    0.46000000000000024,
+    0.5700000000000003
+  ],
+  "best_val_metrics": {
+    "accuracy": 0.695,
+    "f1_macro": 0.6105400838021159,
+    "f1_weighted": 0.6976843878047085
+  },
+  "splits": {
+    "Val": {
+      "baseline": {
+        "accuracy": 0.675,
+        "f1_macro": 0.5983197353433288,
+        "f1_weighted": 0.6791857556285867
+      },
+      "calibrated": {
+        "accuracy": 0.695,
+        "f1_macro": 0.6105400838021159,
+        "f1_weighted": 0.6976843878047085
+      },
+      "delta": {
+        "accuracy": 0.019999999999999907,
+        "f1_macro": 0.012220348458787056,
+        "f1_weighted": 0.0184986321761218
+      }
+    },
+    "Test1": {
+      "baseline": {
+        "accuracy": 0.5771929824561404,
+        "f1_macro": 0.5087712055890539,
+        "f1_weighted": 0.6053086285501381
+      },
+      "calibrated": {
+        "accuracy": 0.5991228070175438,
+        "f1_macro": 0.5136255515184461,
+        "f1_weighted": 0.623532036545595
+      },
+      "delta": {
+        "accuracy": 0.021929824561403466,
+        "f1_macro": 0.0048543459293922675,
+        "f1_weighted": 0.018223407995456853
+      }
+    },
+    "Test2": {
+      "baseline": {
+        "accuracy": 0.529,
+        "f1_macro": 0.47368931112423146,
+        "f1_weighted": 0.5551803758968028
+      },
+      "calibrated": {
+        "accuracy": 0.53,
+        "f1_macro": 0.4456162184985526,
+        "f1_weighted": 0.5489335977758081
+      },
+      "delta": {
+        "accuracy": 0.0010000000000000009,
+        "f1_macro": -0.028073092625678864,
+        "f1_weighted": -0.006246778120994723
+      }
+    },
+    "Test3": {
+      "baseline": {
+        "accuracy": 0.47368421052631576,
+        "f1_macro": 0.4249741258013657,
+        "f1_weighted": 0.4932531764280974
+      },
+      "calibrated": {
+        "accuracy": 0.4824561403508772,
+        "f1_macro": 0.4107008514912203,
+        "f1_weighted": 0.5001023403165982
+      },
+      "delta": {
+        "accuracy": 0.00877192982456143,
+        "f1_macro": -0.014273274310145356,
+        "f1_weighted": 0.006849163888500764
+      }
+    }
+  }
+}
