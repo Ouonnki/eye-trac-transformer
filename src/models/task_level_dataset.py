@@ -61,13 +61,17 @@ class TaskLevelGazeDataset(Dataset):
                 input_dim=config.input_dim,
             )
         )
-        
+
+        # 数据增强（仅对 training_indices 中的样本生效）
+        self.augmentation = None
+        self.training_indices: set = set()
+
         # 构建任务级样本列表
         self.samples = self._build_samples(processed_data)
-        
+
         if fit_normalizer:
             self._fit_normalizer()
-            
+
         logger.info(f"任务级数据集创建完成: {len(self.samples)} 个样本")
 
     def _build_samples(self, processed_data: List[Dict]) -> List[Dict]:
@@ -130,7 +134,13 @@ class TaskLevelGazeDataset(Dataset):
                 segments[s_idx, :seq_len] = seg_features[:seq_len]
                 segment_mask[s_idx] = True
                 segment_seq_mask[s_idx, :seq_len] = True
-        
+
+        # 数据增强（仅训练集样本）
+        if self.augmentation is not None and idx in self.training_indices:
+            segments, segment_mask, segment_seq_mask = self.augmentation(
+                segments, segment_mask, segment_seq_mask
+            )
+
         # 任务条件 (5维)
         tc = sample['task_conditions']
         number_range_max = tc.get('number_range', (1, 25))[1]

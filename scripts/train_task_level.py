@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.models.task_level_model import TaskLevelEncoder
 from src.models.task_level_dataset import TaskLevelGazeDataset, TaskLevelSequenceConfig, task_level_collate_fn
 from src.models.task_level_trainer import TaskLevelTrainer
+from src.models.augmentation import GazeAugmentation
 
 # 设置日志
 logging.basicConfig(
@@ -388,6 +389,15 @@ def main():
     test1_dataset = Subset(dataset, test1_indices)
     test2_dataset = Subset(dataset, test2_indices)
     test3_dataset = Subset(dataset, test3_indices)
+
+    # 配置数据增强（仅对训练集生效）
+    aug_config = config.get('augmentation', {})
+    if aug_config:
+        dataset.augmentation = GazeAugmentation(aug_config)
+        dataset.training_indices = set(train_indices)
+        logger.info(f"数据增强已启用: {aug_config}")
+    else:
+        logger.info("未配置数据增强")
     
     # 统计各集合的被试数和样本数
     def get_stats(indices):
