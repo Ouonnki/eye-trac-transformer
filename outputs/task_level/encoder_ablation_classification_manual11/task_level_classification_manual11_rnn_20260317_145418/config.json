@@ -1,0 +1,78 @@
+{
+  "experiment": {
+    "name": "task_level_classification_manual11_rnn",
+    "output_dir": "outputs/task_level/encoder_ablation_classification_manual11",
+    "random_seed": 42,
+    "train_subjects": 100,
+    "train_tasks": 20,
+    "n_repeats": 1
+  },
+  "sequence": {
+    "max_seq_len": 300,
+    "max_segments": 25,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "input_dim": 7
+  },
+  "model": {
+    "segment_d_model": 32,
+    "segment_nhead": 2,
+    "segment_num_layers": 1,
+    "attention_dim": 16,
+    "task_embedding_dim": 2,
+    "use_task_embedding": true,
+    "dropout": 0.0,
+    "num_classes": 3,
+    "use_gradient_checkpointing": false,
+    "head_type": "classification",
+    "segment_encoder_type": "rnn",
+    "segment_rnn_hidden_size": 32,
+    "segment_rnn_layers": 1,
+    "segment_rnn_dropout": 0.0
+  },
+  "training": {
+    "batch_size": 16,
+    "num_workers": 0,
+    "epochs": 100,
+    "lr": 0.0003,
+    "weight_decay": 0.0,
+    "grad_clip": 1.0,
+    "patience": 20,
+    "early_stop_metric": "f1_macro",
+    "train_val_split": 0.9,
+    "use_class_weights": false,
+    "class_weights_mode": "manual",
+    "class_weights": [
+      2.2,
+      0.4484,
+      1.9
+    ],
+    "use_focal_loss": false,
+    "focal_loss_alpha": [
+      0.25,
+      0.25,
+      0.25
+    ],
+    "focal_loss_gamma": 2.0,
+    "use_balanced_sampler": true,
+    "balanced_sampler_mode": "effective_num",
+    "balanced_sampler_beta": 0.999,
+    "label_smoothing": 0.0,
+    "ordinal_thresholds": [
+      0.47,
+      0.5
+    ],
+    "ordinal_pos_weight_mode": "manual",
+    "ordinal_pos_weight_clip": [
+      0.5,
+      2.5
+    ],
+    "ordinal_pos_weight": [
+      0.5,
+      1.1
+    ]
+  },
+  "data": {
+    "processed_data_path": "data/processed/processed_data_subject_norm.pkl"
+  }
+}
