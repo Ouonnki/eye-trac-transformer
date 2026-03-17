@@ -2,29 +2,29 @@
 set -euo pipefail
 
 cd /home/sysadmin/eye-trac-transformer
-RUNROOT="${1:-outputs/task_level/encoder_ablation_$(date +%Y%m%d_%H%M%S)}"
+RUNROOT="${1:-outputs/task_level/encoder_ablation_classification_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "$RUNROOT"
 
 export PYTHONUNBUFFERED=1
 
-echo "[$(date '+%F %T')] 编码器对比流水线启动" | tee -a "$RUNROOT/pipeline.log"
+echo "[$(date '+%F %T')] 编码器对比流水线启动（分类损失）" | tee -a "$RUNROOT/pipeline.log"
 
 ENCODERS=("transformer" "cnn1d" "rnn" "lstm" "gru" "bilstm")
 CONFIGS=(
-  "configs/task_level_small_lr_ordinal_pw_manual11.json"
-  "configs/task_level_ordinal_manual11_cnn1d.json"
-  "configs/task_level_ordinal_manual11_rnn.json"
-  "configs/task_level_ordinal_manual11_lstm.json"
-  "configs/task_level_ordinal_manual11_gru.json"
-  "configs/task_level_ordinal_manual11_bilstm.json"
+  "configs/task_level_classification_manual11_transformer.json"
+  "configs/task_level_classification_manual11_cnn1d.json"
+  "configs/task_level_classification_manual11_rnn.json"
+  "configs/task_level_classification_manual11_lstm.json"
+  "configs/task_level_classification_manual11_gru.json"
+  "configs/task_level_classification_manual11_bilstm.json"
 )
 EXPERIMENTS=(
-  "task_level_ordinal_manual11_transformer"
-  "task_level_ordinal_manual11_cnn1d"
-  "task_level_ordinal_manual11_rnn"
-  "task_level_ordinal_manual11_lstm"
-  "task_level_ordinal_manual11_gru"
-  "task_level_ordinal_manual11_bilstm"
+  "task_level_classification_manual11_transformer"
+  "task_level_classification_manual11_cnn1d"
+  "task_level_classification_manual11_rnn"
+  "task_level_classification_manual11_lstm"
+  "task_level_classification_manual11_gru"
+  "task_level_classification_manual11_bilstm"
 )
 
 RUN_DIRS=()
