@@ -164,3 +164,54 @@ class TaskEmbedding(nn.Module):
         task_emb = torch.cat([grid_emb] + discrete_embs, dim=1)
 
         return task_emb
+
+
+class MLPTaskEmbedding(nn.Module):
+    """
+    MLP 任务嵌入模块
+
+    将5个任务条件通过 MLP 映射到嵌入空间，自动学习条件间的交互效应。
+    相比独立嵌入+拼接的方式，MLP 能捕捉如"大格+干扰项"的组合难度。
+
+    输入: 5维任务条件向量（grid_scale 归一化到 [0.25,1.0]，其余为 0/1）
+    输出: (batch, output_dim) 嵌入向量
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 5,
+        hidden_dim: int = 32,
+        output_dim: int = 16,
+    ):
+        super().__init__()
+        self.output_dim = output_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, task_conditions: torch.Tensor) -> torch.Tensor:
+        """
+        前向传播
+
+        Args:
+            task_conditions: (batch, 5) 任务条件
+                [grid_scale(1-4), continuous_thinking(0/1),
+                 click_disappear(0/1), has_distractor(0/1), has_task_distractor(0/1)]
+
+        Returns:
+            (batch, output_dim) 任务嵌入向量
+        """
+        x = task_conditions.float()
+        # 归一化 grid_scale (1-4) 到 [0.25, 1.0]，与二值特征量纲对齐
+        x = torch.cat([x[:, 0:1] / 4.0, x[:, 1:]], dim=1)
+        return self.mlp(x)

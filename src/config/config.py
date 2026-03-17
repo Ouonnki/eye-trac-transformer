@@ -53,6 +53,10 @@ class ModelConfig:
     use_task_embedding: bool = False
     # 任务嵌入维度（所有五个条件使用统一的嵌入维度）
     task_embedding_dim: int = 2
+    # 任务嵌入类型: "independent"（独立嵌入+拼接）或 "mlp"（MLP 学习条件交互）
+    task_embedding_type: str = "independent"
+    # 是否使用条件化注意力聚合（任务嵌入条件化片段注意力权重）
+    use_conditional_pooling: bool = False
 
 
 @dataclass

@@ -17,7 +17,7 @@ import torch.nn as nn
 
 from src.models.encoders import GazeTransformerEncoder, GazeCnnEncoder, GazeRnnEncoder
 from src.models.attention import AttentionPooling
-from src.models.task_embedding import TaskEmbedding
+from src.models.task_embedding import TaskEmbedding, MLPTaskEmbedding
 from src.models.heads import PredictionHead
 
 logger = logging.getLogger(__name__)
@@ -53,16 +53,20 @@ class TaskLevelEncoder(nn.Module):
         attention_dim: int = 32,
         task_embedding_dim: int = 2,
         use_task_embedding: bool = True,
+        task_embedding_type: str = "independent",
+        use_conditional_pooling: bool = False,
         dropout: float = 0.5,
         num_classes: int = 3,
         head_type: str = "classification",
         use_gradient_checkpointing: bool = False,
     ):
         super().__init__()
-        
+
         self.max_segments = max_segments
         self.segment_d_model = segment_d_model
         self.use_task_embedding = use_task_embedding
+        self.task_embedding_type = task_embedding_type
+        self.use_conditional_pooling = use_conditional_pooling
         self.num_classes = num_classes
         self.head_type = head_type
         if self.head_type not in {"classification", "ordinal"}:
@@ -109,22 +113,33 @@ class TaskLevelEncoder(nn.Module):
         else:
             raise ValueError(f"不支持的片段编码器类型: {self.segment_encoder_type}")
         
-        # 2. 片段->任务聚合
+        # 2. 片段->任务聚合 (延后创建，需要先确定 cond_dim)
+        # 3. 任务嵌入
+        if self.use_task_embedding:
+            if task_embedding_type == "mlp":
+                self.task_embedding = MLPTaskEmbedding(
+                    input_dim=5,
+                    hidden_dim=max(task_embedding_dim * 2, 32),
+                    output_dim=task_embedding_dim,
+                )
+                self.task_emb_output_dim = task_embedding_dim
+            else:
+                self.task_embedding = TaskEmbedding(
+                    task_embedding_dim=task_embedding_dim,
+                )
+                self.task_emb_output_dim = self.task_embedding.output_dim  # = 5 * dim
+        else:
+            self.task_embedding = None
+            self.task_emb_output_dim = 0
+
+        # 片段聚合器（可条件化）
+        cond_dim = self.task_emb_output_dim if (use_task_embedding and use_conditional_pooling) else None
         self.segment_aggregator = AttentionPooling(
             input_dim=segment_d_model,
             attention_dim=attention_dim,
             dropout=dropout,
+            cond_dim=cond_dim,
         )
-        
-        # 3. 任务嵌入 (dim=2, 输出=10)
-        if self.use_task_embedding:
-            self.task_embedding = TaskEmbedding(
-                task_embedding_dim=task_embedding_dim,
-            )
-            self.task_emb_output_dim = self.task_embedding.output_dim  # = 10
-        else:
-            self.task_embedding = None
-            self.task_emb_output_dim = 0
         
         # 4. 预测头 (96 + 10 = 106 -> 3, 或 96 -> 3 当不使用任务嵌入时)
         head_input_dim = segment_d_model + self.task_emb_output_dim
@@ -183,13 +198,13 @@ class TaskLevelEncoder(nn.Module):
         
         # 重塑 -> (B, S, 96)
         segment_reprs = segment_reprs.view(B, num_segments, self.segment_d_model)
-        
-        # 2. 聚合片段 -> (B, 96)
-        task_repr, _ = self.segment_aggregator(segment_reprs, segment_mask)
-        
-        # 3. 任务嵌入 -> (B, 10) 或空
-        if self.use_task_embedding:
-            if task_conditions is not None:
+
+        # 2. 计算任务嵌入（提前到聚合之前，用于条件化注意力）
+        task_emb = None
+        if self.use_task_embedding and task_conditions is not None:
+            if self.task_embedding_type == "mlp":
+                task_emb = self.task_embedding(task_conditions)
+            else:
                 task_emb = self.task_embedding(
                     grid_scale=task_conditions[:, 0].long(),
                     continuous_thinking=task_conditions[:, 1].long(),
@@ -197,15 +212,20 @@ class TaskLevelEncoder(nn.Module):
                     has_distractor=task_conditions[:, 3].long(),
                     has_task_distractor=task_conditions[:, 4].long(),
                 )
-            else:
-                task_emb = torch.zeros(B, self.task_emb_output_dim, device=segments.device)
-            # 4. 拼接 -> (B, 106)
+
+        # 3. 聚合片段 -> (B, 96)，可选条件化注意力
+        if self.use_conditional_pooling and task_emb is not None:
+            task_repr, _ = self.segment_aggregator(segment_reprs, segment_mask, condition=task_emb)
+        else:
+            task_repr, _ = self.segment_aggregator(segment_reprs, segment_mask)
+
+        # 4. 拼接任务嵌入 -> (B, 96+emb_dim) 或 (B, 96)
+        if task_emb is not None:
             fused = torch.cat([task_repr, task_emb], dim=-1)
         else:
-            # 不使用任务嵌入，直接使用任务表示
             fused = task_repr
-        
-        # 5. 预测 -> (B, 3)
+
+        # 5. 预测 -> (B, C) 或 (B, C-1)
         logits = self.prediction_head(fused)
         
         return logits

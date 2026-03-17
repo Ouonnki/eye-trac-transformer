@@ -542,6 +542,8 @@ def main():
         attention_dim=config['model']['attention_dim'],
         task_embedding_dim=config['model']['task_embedding_dim'],
         use_task_embedding=use_task_embedding,
+        task_embedding_type=config['model'].get('task_embedding_type', 'independent'),
+        use_conditional_pooling=config['model'].get('use_conditional_pooling', False),
         dropout=config['model']['dropout'],
         num_classes=config['model']['num_classes'],
         head_type=head_type,

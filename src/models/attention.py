@@ -34,6 +34,7 @@ class AttentionPooling(nn.Module):
         input_dim: int,
         attention_dim: int = 32,
         dropout: float = 0.1,
+        cond_dim: int = None,
     ):
         """
         初始化
@@ -42,6 +43,7 @@ class AttentionPooling(nn.Module):
             input_dim: 输入特征维度
             attention_dim: 注意力隐藏层维度
             dropout: Dropout比例
+            cond_dim: 条件向量维度（None 表示不使用条件化注意力）
         """
         super().__init__()
 
@@ -49,10 +51,17 @@ class AttentionPooling(nn.Module):
         self.W2 = nn.Linear(attention_dim, 1, bias=False)
         self.dropout = nn.Dropout(dropout)
 
+        # 条件化注意力：将条件向量投影到注意力空间，偏置注意力分数
+        if cond_dim is not None:
+            self.W_cond = nn.Linear(cond_dim, attention_dim, bias=False)
+        else:
+            self.W_cond = None
+
     def forward(
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
+        condition: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         前向传播
@@ -60,6 +69,7 @@ class AttentionPooling(nn.Module):
         Args:
             x: (batch, seq_len, input_dim) 输入序列
             mask: (batch, seq_len) 有效位置掩码（True表示有效）
+            condition: (batch, cond_dim) 条件向量（可选，用于条件化注意力）
 
         Returns:
             output: (batch, input_dim) 聚合后的表示
@@ -67,7 +77,14 @@ class AttentionPooling(nn.Module):
         """
         # 计算注意力分数
         # (batch, seq_len, attention_dim)
-        hidden = torch.tanh(self.W1(x))
+        hidden = self.W1(x)
+
+        # 条件化：将条件向量投影后加到隐藏表示上（broadcast 到所有位置）
+        if condition is not None and self.W_cond is not None:
+            cond_proj = self.W_cond(condition)  # (batch, attention_dim)
+            hidden = hidden + cond_proj.unsqueeze(1)  # (batch, 1, attention_dim) broadcast
+
+        hidden = torch.tanh(hidden)
         hidden = self.dropout(hidden)
         # (batch, seq_len, 1) -> (batch, seq_len)
         scores = self.W2(hidden).squeeze(-1)
