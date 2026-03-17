@@ -38,6 +38,7 @@ for i in "${!ENCODERS[@]}"; do
   conda run -n cadt python -u scripts/train_task_level.py \
     --config "$cfg" \
     --experiment-name "$exp" \
+    --use-task-embedding false \
     --output-dir outputs/task_level \
     2>&1 | tee "$RUNROOT/01_train_${enc}.log"
 
