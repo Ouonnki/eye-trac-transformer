@@ -1,0 +1,5 @@
+id,task,status,acceptance_criteria,validation_command,completed_at,retry_count,notes
+1,Add failing tests for full-data loader behavior,DONE,Tests assert all samples are used for training and no 2x2 split is required,python tests/test_full_data_training.py,2026-06-07,1,pytest is not installed; unittest red test fails on missing src.training
+2,Implement full-data training helper,DONE,Helper builds a train loader covering all dataset samples and optional eval loader,python tests/test_full_data_training.py,2026-06-07,0,
+3,Add full-data config and training script,DONE,Script uses ordinal+bilstm+task_embedding config and never calls split_2x2,python -m py_compile scripts/train_task_level_full_data.py,2026-06-07,0,
+4,Run final verification,DONE,Targeted tests and syntax checks pass,python tests/test_full_data_training.py; python -m py_compile scripts/train_task_level_full_data.py,2026-06-07,0,
