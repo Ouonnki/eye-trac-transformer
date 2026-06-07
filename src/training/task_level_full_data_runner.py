@@ -22,14 +22,18 @@ from src.models.task_level_model import TaskLevelEncoder
 from src.models.task_level_trainer import TaskLevelTrainer
 from src.training.full_data import FullDataLoaderConfig, build_full_data_train_loader
 from src.training.full_data import build_class_weights, build_ordinal_pos_weight
+from src.training.task_level_full_data_loop import train_full_data
 
 
-FINAL_MODEL_FILENAME = "final_model.pt"
 CONFIG_FILENAME = "config.json"
 HISTORY_FILENAME = "history.json"
 TRAIN_RESULTS_FILENAME = "train_results.json"
 ORDINAL_HEAD = "ordinal"
-FULL_DATA_MODE = "full_data"
+RANDOM_HOLDOUT_MODE = "random_holdout"
+ALL_SAMPLES_SCOPE = "all_samples"
+SAMPLE_UNIT = "sample"
+NO_TEST_FRACTION = 0.0
+SPLIT_TOLERANCE = 1e-9
 DEFAULT_SCREEN_WIDTH = 1920
 DEFAULT_SCREEN_HEIGHT = 1080
 DEFAULT_NUM_WORKERS = 0
@@ -70,13 +74,14 @@ def run_full_data_training(
     train_result = train_full_data(
         trainer,
         loader_result.train_loader,
+        loader_result.val_loader,
         config,
         output_dir,
     )
 
     save_json(output_dir / CONFIG_FILENAME, config)
     save_json(output_dir / HISTORY_FILENAME, train_result["history"])
-    save_json(output_dir / TRAIN_RESULTS_FILENAME, train_result["final_train_metrics"])
+    save_json(output_dir / TRAIN_RESULTS_FILENAME, train_result)
     logger.info("Training finished. Results saved to %s", output_dir)
     return output_dir
 
@@ -97,13 +102,16 @@ def load_config(config_path: Path) -> dict:
 def validate_full_data_split(config: dict) -> None:
     split = config.get("split")
     if split is None:
-        raise ValueError("full-data training config requires split.mode=full_data")
-    if split.get("mode") != FULL_DATA_MODE:
-        raise ValueError("full-data training only supports split.mode=full_data")
-    if split.get("train_fraction") != 1.0:
-        raise ValueError("full-data training requires split.train_fraction=1.0")
-    if split.get("validation_fraction") != 0.0:
-        raise ValueError("full-data training requires split.validation_fraction=0.0")
+        raise ValueError("training config requires split settings")
+    if split.get("mode") != RANDOM_HOLDOUT_MODE:
+        raise ValueError("training only supports split.mode=random_holdout")
+    if split.get("scope") != ALL_SAMPLES_SCOPE or split.get("unit") != SAMPLE_UNIT:
+        raise ValueError("random holdout split must use all_samples/sample")
+    if split.get("test_fraction") != NO_TEST_FRACTION:
+        raise ValueError("random holdout training requires split.test_fraction=0.0")
+    total = split["train_fraction"] + split["validation_fraction"]
+    if abs(total - 1.0) > SPLIT_TOLERANCE:
+        raise ValueError("train_fraction + validation_fraction must equal 1.0")
 
 
 def save_json(path: Path, payload: dict) -> None:
@@ -162,6 +170,8 @@ def build_loader_config(config: dict) -> FullDataLoaderConfig:
         num_workers=training.get("num_workers", DEFAULT_NUM_WORKERS),
         pin_memory=torch.cuda.is_available(),
         use_balanced_sampler=training.get("use_balanced_sampler", False),
+        validation_fraction=config["split"]["validation_fraction"],
+        random_seed=config["experiment"]["random_seed"],
         balanced_sampler_mode=training.get("balanced_sampler_mode", DEFAULT_BALANCED_MODE),
         balanced_sampler_beta=training.get("balanced_sampler_beta", DEFAULT_BALANCED_BETA),
     )
@@ -222,53 +232,3 @@ def build_trainer(model, device: torch.device, config: dict, train_labels: np.nd
         ordinal_thresholds=training.get("ordinal_thresholds"),
         ordinal_pos_weight=ordinal_pos_weight,
     )
-
-def init_history() -> dict:
-    return {"train_loss": [], "train_acc": [], "train_f1": [], "train_f1_macro": []}
-
-
-def append_history(history: dict, metrics: dict) -> None:
-    history["train_loss"].append(metrics["loss"])
-    history["train_acc"].append(metrics["accuracy"])
-    history["train_f1"].append(metrics["f1_weighted"])
-    history["train_f1_macro"].append(metrics["f1_macro"])
-
-
-def save_final_checkpoint(trainer, path: Path, epoch: int, final_metrics: dict) -> None:
-    torch.save(
-        {
-            "epoch": epoch,
-            "checkpoint_policy": "final_epoch_full_data",
-            "model_state_dict": trainer.model.state_dict(),
-            "optimizer_state_dict": trainer.optimizer.state_dict(),
-            "scheduler_state_dict": trainer.scheduler.state_dict(),
-            "final_train_metrics": final_metrics,
-        },
-        path,
-    )
-    logger.info("Final full-data checkpoint saved to %s", path)
-
-
-def train_full_data(trainer, train_loader, config: dict, output_dir: Path) -> dict:
-    epochs = config["training"]["epochs"]
-    history = init_history()
-    final_metrics = {}
-    logger.info("Full-data mode: all samples are used for training.")
-    logger.info("No validation split is created; checkpoint policy is final epoch.")
-
-    for epoch in range(1, epochs + 1):
-        metrics = trainer.train_epoch(train_loader, epoch, epochs)
-        append_history(history, metrics)
-        trainer.scheduler.step(metrics["loss"])
-        final_metrics = metrics
-        logger.info(
-            "Epoch %s/%s train loss=%.4f acc=%.4f f1_macro=%.4f",
-            epoch,
-            epochs,
-            metrics["loss"],
-            metrics["accuracy"],
-            metrics["f1_macro"],
-        )
-
-    save_final_checkpoint(trainer, output_dir / FINAL_MODEL_FILENAME, epochs, final_metrics)
-    return {"history": history, "final_train_metrics": final_metrics}

@@ -13,9 +13,11 @@
     "input_dim": 7
   },
   "split": {
-    "mode": "full_data",
-    "train_fraction": 1.0,
-    "validation_fraction": 0.0,
+    "mode": "random_holdout",
+    "scope": "all_samples",
+    "unit": "sample",
+    "train_fraction": 0.9,
+    "validation_fraction": 0.1,
     "test_fraction": 0.0
   },
   "model": {
@@ -37,41 +39,26 @@
   "training": {
     "batch_size": 16,
     "num_workers": 0,
-    "epochs": 100,
+    "epochs": 150,
     "lr": 0.0003,
     "weight_decay": 0.0,
     "grad_clip": 1.0,
+    "patience": 20,
+    "early_stop_metric": "f1_macro",
     "use_class_weights": false,
     "class_weights_mode": "manual",
-    "class_weights": [
-      2.2,
-      0.4484,
-      1.9
-    ],
+    "class_weights": [2.2, 0.4484, 1.9],
     "use_focal_loss": false,
-    "focal_loss_alpha": [
-      0.25,
-      0.25,
-      0.25
-    ],
+    "focal_loss_alpha": [0.25, 0.25, 0.25],
     "focal_loss_gamma": 2.0,
     "use_balanced_sampler": true,
     "balanced_sampler_mode": "effective_num",
     "balanced_sampler_beta": 0.999,
     "label_smoothing": 0.0,
-    "ordinal_thresholds": [
-      0.47,
-      0.5
-    ],
+    "ordinal_thresholds": [0.47, 0.5],
     "ordinal_pos_weight_mode": "manual",
-    "ordinal_pos_weight_clip": [
-      0.5,
-      2.5
-    ],
-    "ordinal_pos_weight": [
-      0.5,
-      1.1
-    ]
+    "ordinal_pos_weight_clip": [0.5, 2.5],
+    "ordinal_pos_weight": [0.5, 1.1]
   },
   "data": {
     "processed_data_path": "data/processed/processed_data_subject_norm.pkl"

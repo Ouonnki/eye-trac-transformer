@@ -24,6 +24,8 @@ class FullDataLoaderConfig:
     num_workers: int
     pin_memory: bool
     use_balanced_sampler: bool
+    validation_fraction: float
+    random_seed: int
     balanced_sampler_mode: str = EFFECTIVE_NUM_MODE
     balanced_sampler_beta: float = 0.999
 
@@ -32,6 +34,8 @@ class FullDataLoaderConfig:
 class FullDataTrainLoader:
     train_loader: DataLoader
     train_indices: Tuple[int, ...]
+    val_loader: Optional[DataLoader]
+    val_indices: Tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -54,8 +58,13 @@ def build_full_data_train_loader(
     if len(dataset) == 0:
         raise ValueError("full-data training requires at least one sample")
 
-    train_indices = tuple(range(len(dataset)))
+    train_indices, val_indices = split_full_data_indices(
+        sample_count=len(dataset),
+        validation_fraction=options.validation_fraction,
+        random_seed=options.random_seed,
+    )
     train_subset = IndexSubset(dataset=dataset, indices=train_indices)
+    val_subset = IndexSubset(dataset=dataset, indices=val_indices) if val_indices else None
     sampler = _build_sampler(dataset, train_indices, options)
 
     train_loader = DataLoader(
@@ -67,7 +76,46 @@ def build_full_data_train_loader(
         num_workers=options.num_workers,
         pin_memory=options.pin_memory,
     )
-    return FullDataTrainLoader(train_loader=train_loader, train_indices=train_indices)
+    val_loader = None
+    if val_subset is not None:
+        val_loader = DataLoader(
+            val_subset,
+            batch_size=options.batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+            num_workers=options.num_workers,
+            pin_memory=options.pin_memory,
+        )
+    return FullDataTrainLoader(
+        train_loader=train_loader,
+        train_indices=train_indices,
+        val_loader=val_loader,
+        val_indices=val_indices,
+    )
+
+
+def split_full_data_indices(
+    sample_count: int,
+    validation_fraction: float,
+    random_seed: int,
+) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:
+    if not 0.0 <= validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be in [0.0, 1.0)")
+    if validation_fraction == 0.0:
+        return tuple(range(sample_count)), ()
+
+    val_count = int(round(sample_count * validation_fraction))
+    if val_count <= 0:
+        raise ValueError("validation split is too small for the sample count")
+    if val_count >= sample_count:
+        raise ValueError("validation split leaves no training samples")
+
+    rng = np.random.RandomState(random_seed)
+    shuffled = np.arange(sample_count)
+    rng.shuffle(shuffled)
+    val_indices = tuple(sorted(int(index) for index in shuffled[:val_count]))
+    train_indices = tuple(sorted(int(index) for index in shuffled[val_count:]))
+    return train_indices, val_indices
 
 
 def _build_sampler(
