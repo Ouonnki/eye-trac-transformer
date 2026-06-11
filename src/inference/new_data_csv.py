@@ -5,7 +5,7 @@ import csv
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from src.inference.new_data_types import (
     EventSample,
@@ -79,7 +79,7 @@ def read_trial_windows(
 def build_segment(
     window: TrialWindow,
     task_spec: TaskSpec,
-) -> Tuple[Tuple[GazeSample, ...] | None, int, Tuple[str, ...]]:
+) -> Tuple[Optional[Tuple[GazeSample, ...]], int, Tuple[str, ...]]:
     end_us, warnings = _resolve_end_time(window, task_spec)
     warnings.extend(_window_data_warnings(window))
     if end_us is None:
@@ -147,7 +147,7 @@ def _append_gaze(
 def _resolve_end_time(
     window: TrialWindow,
     task_spec: TaskSpec,
-) -> Tuple[int | None, List[str]]:
+) -> Tuple[Optional[int], List[str]]:
     if task_spec.key == "complex":
         end_us = _first_event_time(window, "MouseEvent")
         return end_us, _missing_event_warning(window, "MouseEvent", end_us)
@@ -157,14 +157,14 @@ def _resolve_end_time(
     return _spot_difference_end(window)
 
 
-def _first_event_time(window: TrialWindow, event_name: str) -> int | None:
+def _first_event_time(window: TrialWindow, event_name: str) -> Optional[int]:
     return next(
         (event.timestamp_us for event in window.events if event.name == event_name),
         None,
     )
 
 
-def _last_enter_in_first_group(window: TrialWindow) -> int | None:
+def _last_enter_in_first_group(window: TrialWindow) -> Optional[int]:
     enter_times = [
         event.timestamp_us
         for event in window.events
@@ -180,7 +180,7 @@ def _last_enter_in_first_group(window: TrialWindow) -> int | None:
     return group_end
 
 
-def _spot_difference_end(window: TrialWindow) -> Tuple[int | None, List[str]]:
+def _spot_difference_end(window: TrialWindow) -> Tuple[Optional[int], List[str]]:
     expected_end = f"TaskEnd{window.number}"
     boundary = next(
         (event.timestamp_us for event in window.events if event.name == expected_end),
@@ -203,7 +203,7 @@ def _spot_difference_end(window: TrialWindow) -> Tuple[int | None, List[str]]:
 def _missing_event_warning(
     window: TrialWindow,
     event_description: str,
-    end_us: int | None,
+    end_us: Optional[int],
 ) -> List[str]:
     if end_us is not None:
         return []
