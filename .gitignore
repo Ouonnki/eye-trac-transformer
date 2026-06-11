@@ -58,6 +58,7 @@ logs/
 # Codex
 .agents/
 .codex/
+.codex-tasks/
 
 # 系统文件
 .DS_Store
