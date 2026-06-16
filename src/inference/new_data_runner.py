@@ -35,6 +35,8 @@ DEFAULT_CHECKPOINT_PATH = Path(
 DEFAULT_DATA_DIR = Path("新数据（40人）")
 DEFAULT_OUTPUT_ROOT = Path("outputs/new_data_inference")
 CONDITION_PATTERN = re.compile(r"[（(]([^（）()]*)[）)]")
+CONDITION_VALUE_PATTERN = re.compile(r"^[+-]?\d+$")
+CONDITION_CHOICE_SEPARATOR = re.compile(r"[:：_]")
 CONDITION_DIMENSIONS = 5
 
 
@@ -159,14 +161,13 @@ def _condition_parts(directory_name: str, expression: str) -> Tuple[str, ...]:
 
 def _parse_condition_part(directory_name: str, part: str) -> Tuple[int, ...]:
     values = []
-    for raw_value in part.split(":"):
+    for raw_value in CONDITION_CHOICE_SEPARATOR.split(part):
         value = raw_value.strip()
         if not value:
             raise ValueError(f"{directory_name}: 条件维度包含空值")
-        try:
-            values.append(int(value))
-        except ValueError as error:
-            raise ValueError(f"{directory_name}: 条件值不是整数: {value}") from error
+        if CONDITION_VALUE_PATTERN.fullmatch(value) is None:
+            raise ValueError(f"{directory_name}: 条件值不是整数: {value}")
+        values.append(int(value))
     return tuple(values)
 
 

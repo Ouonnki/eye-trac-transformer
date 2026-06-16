@@ -109,21 +109,21 @@ class PredictionResult:
 TASK_SPECS: Mapping[str, TaskSpec] = {
     "complex": TaskSpec(
         key="complex",
-        directory_name="复杂问题解决任务（1:2:3:4，0，0，0，0）",
+        directory_name="复杂问题解决任务（1_2_3_4，0，0，0，0）",
         task_id=101,
         task_conditions=(1, 0, 0, 0, 0),
         sheet_prefix="complex",
     ),
     "situation_awareness": TaskSpec(
         key="situation_awareness",
-        directory_name="情景意识任务（3:4:5:6，1，1，0，1）",
+        directory_name="情景意识任务（3_4_5_6，1，1，0，1）",
         task_id=102,
         task_conditions=(3, 1, 1, 0, 1),
         sheet_prefix="sa",
     ),
     "spot_difference": TaskSpec(
         key="spot_difference",
-        directory_name="找不同任务（3:4:5，1，0:1，1，0）",
+        directory_name="找不同任务（3_4_5，1，0_1，1，0）",
         task_id=103,
         task_conditions=(3, 1, 0, 1, 0),
         sheet_prefix="spot",

@@ -84,6 +84,13 @@ class NewDataRunnerTest(unittest.TestCase):
             self.assertAlmostEqual(sum(probability_row), 1.0, places=6)
 
     def test_parse_task_conditions_from_directory_name(self):
+        conditions = parse_task_conditions("找不同任务（3_4_5，1，0_1，1，0）")
+
+        self.assertEqual(len(conditions), 6)
+        self.assertIn((3, 1, 0, 1, 0), conditions)
+        self.assertIn((5, 1, 1, 1, 0), conditions)
+
+    def test_parse_task_conditions_accepts_colon_separator(self):
         conditions = parse_task_conditions("找不同任务（3:4:5，1，0:1，1，0）")
 
         self.assertEqual(len(conditions), 6)
