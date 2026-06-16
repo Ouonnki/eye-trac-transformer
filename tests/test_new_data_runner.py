@@ -2,18 +2,22 @@
 """End-to-end tests for new-data inference output."""
 
 import csv
-import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
 import torch
+from openpyxl import load_workbook
 
 from src.inference.new_data_dataset import NewDataInferenceDataset, inference_collate_fn
 from src.inference.new_data_runner import (
+    DEFAULT_DATA_DIR,
     DEFAULT_CHECKPOINT_PATH,
+    discover_task_files,
+    expand_samples_by_conditions,
     load_inference_model,
+    parse_task_conditions,
     run_new_data_inference,
 )
 from src.inference.new_data_model import decode_ordinal_predictions
@@ -79,12 +83,68 @@ class NewDataRunnerTest(unittest.TestCase):
         for probability_row in probabilities:
             self.assertAlmostEqual(sum(probability_row), 1.0, places=6)
 
-    def test_end_to_end_copies_csv_and_appends_prediction_last(self):
+    def test_parse_task_conditions_from_directory_name(self):
+        conditions = parse_task_conditions("找不同任务（3:4:5，1，0:1，1，0）")
+
+        self.assertEqual(len(conditions), 6)
+        self.assertIn((3, 1, 0, 1, 0), conditions)
+        self.assertIn((5, 1, 1, 1, 0), conditions)
+
+    def test_discover_task_files_excludes_schulte_and_keeps_condition_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "新数据（40人）"
+            self._write_many_task_files(data_dir, subject_count=41)
+            (data_dir / "舒尔特方格任务" / "舒尔特方格眼动数据").mkdir(parents=True)
+
+            task_files = discover_task_files(data_dir)
+
+        condition_counts = {
+            task_set.spec.key: len(task_set.conditions)
+            for task_set in task_files
+        }
+        file_counts = {
+            task_set.spec.key: len(task_set.paths)
+            for task_set in task_files
+        }
+        self.assertEqual(condition_counts, {
+            "complex": 4,
+            "situation_awareness": 4,
+            "spot_difference": 6,
+        })
+        self.assertEqual(file_counts, {
+            "complex": 41,
+            "situation_awareness": 41,
+            "spot_difference": 41,
+        })
+
+    def test_discover_task_files_requires_complete_subject_sets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "新数据（40人）"
+            sources = self._write_many_task_files(data_dir, subject_count=2)
+            next(path for path in sources if "找不同任务" in str(path)).unlink()
+
+            with self.assertRaisesRegex(ValueError, "被试集合不完整"):
+                discover_task_files(data_dir)
+
+    def test_expand_samples_by_conditions_reuses_source_segments(self):
+        sample = self._sample()
+        expanded = expand_samples_by_conditions(
+            (sample,),
+            {
+                "complex": ((1, 0, 0, 0, 0), (2, 0, 0, 0, 0)),
+            },
+        )
+
+        self.assertEqual(len(expanded), 2)
+        self.assertEqual(expanded[0].segments, sample.segments)
+        self.assertEqual(expanded[0].task_conditions, (1, 0, 0, 0, 0))
+        self.assertEqual(expanded[1].task_conditions, (2, 0, 0, 0, 0))
+
+    def test_end_to_end_writes_single_workbook_with_condition_sheets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            data_dir = root / "新数据"
-            sources = self._write_three_task_files(data_dir)
-            source_hashes = {path: self._hash(path) for path in sources}
+            data_dir = root / "新数据（40人）"
+            self._write_many_task_files(data_dir, subject_count=2)
             checkpoint = root / "model" / "best_model.pt"
             self._write_checkpoint(checkpoint)
 
@@ -95,33 +155,22 @@ class NewDataRunnerTest(unittest.TestCase):
                 device_name="cpu",
             )
 
-            copied = sorted(output_dir.rglob("*_task.csv"))
-            self.assertEqual(len(copied), 3)
-            for source in sources:
-                self.assertEqual(self._hash(source), source_hashes[source])
-            for source, path in zip(sorted(sources), copied):
-                with source.open(encoding="utf-8-sig", newline="") as file_obj:
-                    source_rows = list(csv.reader(file_obj))
-                with path.open(encoding="utf-8-sig", newline="") as file_obj:
-                    rows = list(csv.reader(file_obj))
-                self.assertEqual(rows[0][:-1], source_rows[0])
-                self.assertEqual(len(rows), len(source_rows))
-                self.assertEqual(rows[0][-1], "预测结果")
-                self.assertEqual(len({row[-1] for row in rows[1:]}), 1)
-                self.assertIn(rows[1][-1], {"1", "2", "3"})
-
-            with (output_dir / "predictions.csv").open(
-                encoding="utf-8-sig", newline=""
-            ) as file_obj:
-                summary = list(csv.reader(file_obj))
-            self.assertEqual(summary[0][-1], "预测结果")
-            self.assertEqual(len(summary), 4)
+            workbook_path = output_dir / "predictions.xlsx"
+            self.assertTrue(workbook_path.is_file())
+            self.assertFalse(any(output_dir.rglob("*_task.csv")))
+            workbook = load_workbook(workbook_path, read_only=True, data_only=True)
+            self.assertEqual(len(workbook.sheetnames), 15)
+            self.assertIn("summary", workbook.sheetnames)
+            self.assertIn("complex_1-0-0-0-0", workbook.sheetnames)
+            self.assertIn("spot_5-1-1-1-0", workbook.sheetnames)
+            self.assertEqual(workbook["summary"].max_row, 29)
+            self.assertEqual(workbook["complex_1-0-0-0-0"].max_row, 3)
 
     def test_failed_file_does_not_publish_output_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            data_dir = root / "新数据"
-            sources = self._write_three_task_files(data_dir)
+            data_dir = root / "新数据（40人）"
+            sources = self._write_many_task_files(data_dir, subject_count=1)
             self._write_csv(sources[0], [["0", "TaskStart1", "", "", ""]])
             checkpoint = root / "model" / "best_model.pt"
             self._write_checkpoint(checkpoint)
@@ -139,6 +188,7 @@ class NewDataRunnerTest(unittest.TestCase):
             "best_model.pt"
         )
         self.assertEqual(str(DEFAULT_CHECKPOINT_PATH), expected)
+        self.assertEqual(str(DEFAULT_DATA_DIR), "新数据（40人）")
 
     def _sample(self):
         features = torch.zeros((2, 7), dtype=torch.float32).numpy()
@@ -149,16 +199,19 @@ class NewDataRunnerTest(unittest.TestCase):
             task_conditions=(4, 0, 0, 0, 0),
             segments=(features,),
             source_path=Path("sample.csv"),
+            task_key="complex",
         )
 
-    def _write_three_task_files(self, data_dir):
+    def _write_many_task_files(self, data_dir, subject_count):
         sources = []
-        for index, spec in enumerate(TASK_SPECS.values()):
+        subject_ids = [f"04293{index:02d}" for index in range(subject_count)]
+        for spec in TASK_SPECS.values():
             eye_dir = data_dir / spec.directory_name / "眼动数据"
             eye_dir.mkdir(parents=True)
-            path = eye_dir / f"0429324_{index}_task.csv"
-            self._write_task_csv(path, spec.key)
-            sources.append(path)
+            for subject_id in subject_ids:
+                path = eye_dir / f"{subject_id}_task.csv"
+                self._write_task_csv(path, spec.key)
+                sources.append(path)
         return sources
 
     def _write_task_csv(self, path, task_key):
@@ -232,10 +285,6 @@ class NewDataRunnerTest(unittest.TestCase):
         }
         path.write_text(json.dumps(config), encoding="utf-8")
         return config
-
-    @staticmethod
-    def _hash(path):
-        return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 if __name__ == "__main__":

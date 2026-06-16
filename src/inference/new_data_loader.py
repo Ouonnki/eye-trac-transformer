@@ -53,13 +53,14 @@ def load_task_file(
     return InferenceSample(
         subject_id=_subject_id_from_path(path),
         task_id=task_spec.task_id,
-        task_name=task_spec.directory_name.split("（", maxsplit=1)[0],
+        task_name=task_spec.task_name,
         task_conditions=task_spec.task_conditions,
         segments=tuple(segments),
         source_path=path,
         warnings=tuple(warnings),
         segment_start_times_us=tuple(starts),
         segment_end_times_us=tuple(ends),
+        task_key=task_spec.key,
     )
 
 
