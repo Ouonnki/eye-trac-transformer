@@ -166,12 +166,16 @@ class NewDataRunnerTest(unittest.TestCase):
             self.assertTrue(workbook_path.is_file())
             self.assertFalse(any(output_dir.rglob("*_task.csv")))
             workbook = load_workbook(workbook_path, read_only=True, data_only=True)
-            self.assertEqual(len(workbook.sheetnames), 15)
-            self.assertIn("summary", workbook.sheetnames)
-            self.assertIn("complex_1-0-0-0-0", workbook.sheetnames)
-            self.assertIn("spot_5-1-1-1-0", workbook.sheetnames)
-            self.assertEqual(workbook["summary"].max_row, 29)
-            self.assertEqual(workbook["complex_1-0-0-0-0"].max_row, 3)
+            sheetnames = tuple(workbook.sheetnames)
+            summary_rows = workbook["summary"].max_row
+            complex_rows = workbook["complex_1-0-0-0-0"].max_row
+            workbook.close()
+            self.assertEqual(len(sheetnames), 15)
+            self.assertIn("summary", sheetnames)
+            self.assertIn("complex_1-0-0-0-0", sheetnames)
+            self.assertIn("spot_5-1-1-1-0", sheetnames)
+            self.assertEqual(summary_rows, 29)
+            self.assertEqual(complex_rows, 3)
 
     def test_failed_file_does_not_publish_output_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -194,7 +198,7 @@ class NewDataRunnerTest(unittest.TestCase):
             "task_level_ordinal_manual11_bilstm_full_data_20260607_233158/"
             "best_model.pt"
         )
-        self.assertEqual(str(DEFAULT_CHECKPOINT_PATH), expected)
+        self.assertEqual(DEFAULT_CHECKPOINT_PATH.as_posix(), expected)
         self.assertEqual(str(DEFAULT_DATA_DIR), "新数据（40人）")
 
     def _sample(self):
