@@ -6,6 +6,7 @@
 import os
 import sys
 import json
+import hashlib
 import pickle
 import random
 import logging
@@ -34,6 +35,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+PAPER_EVENT_PREFIX = '@@PAPER_EXPERIMENT@@'
 
 
 def str2bool(value):
@@ -77,6 +80,11 @@ def parse_args():
         type=str,
         default=None,
         help='覆盖配置中的 experiment.output_dir',
+    )
+    parser.add_argument(
+        '--event-stream',
+        action='store_true',
+        help='输出机器可读的实验进度事件',
     )
     return parser.parse_args()
 
@@ -234,7 +242,98 @@ def compute_ordinal_pos_weight(
     return torch.tensor(weights, dtype=torch.float32)
 
 
-def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, seed=42):
+def sample_key(sample):
+    return str(sample['subject_id']), int(sample['task_id'])
+
+
+def dataset_fingerprint(dataset):
+    keys = sorted([list(sample_key(sample)) for sample in dataset.samples])
+    serialized = json.dumps(keys, separators=(',', ':'), ensure_ascii=True)
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def manifest_sample_key(entry):
+    if not isinstance(entry, dict):
+        raise ValueError('Manifest sample entries must be objects')
+    if 'subject_id' not in entry or 'task_id' not in entry:
+        raise ValueError('Manifest sample entries require subject_id and task_id')
+    return str(entry['subject_id']), int(entry['task_id'])
+
+
+def resolve_fixed_sample_holdout(dataset, split_manifest_path):
+    with open(split_manifest_path, encoding='utf-8') as f:
+        manifest = json.load(f)
+
+    if not isinstance(manifest, dict):
+        raise ValueError('Fixed sample holdout manifest must be an object')
+    if manifest.get('schema_version') != 1:
+        raise ValueError('Fixed sample holdout manifest requires schema_version=1')
+    if manifest.get('dataset_fingerprint') != dataset_fingerprint(dataset):
+        raise ValueError('Fixed sample holdout manifest dataset fingerprint does not match dataset')
+
+    split_names = ('train', 'val', 'test1', 'test2', 'test3')
+    manifest_splits = {}
+    all_manifest_keys = set()
+    for split_name in split_names:
+        entries = manifest.get(split_name)
+        if not isinstance(entries, list):
+            raise ValueError(f'Fixed sample holdout manifest requires a {split_name} list')
+        keys = [manifest_sample_key(entry) for entry in entries]
+        if len(keys) != len(set(keys)):
+            raise ValueError(f'Fixed sample holdout {split_name} keys must be unique')
+        duplicate_keys = set(keys) & all_manifest_keys
+        if duplicate_keys:
+            raise ValueError('Fixed sample holdout keys must be unique across splits')
+        all_manifest_keys.update(keys)
+        manifest_splits[split_name] = keys
+
+    sample_indices = {}
+    for index, sample in enumerate(dataset.samples):
+        key = sample_key(sample)
+        if key in sample_indices:
+            raise ValueError('Dataset sample keys must be unique')
+        sample_indices[key] = index
+
+    unknown_keys = all_manifest_keys - set(sample_indices)
+    if unknown_keys:
+        raise ValueError('Fixed sample holdout manifest contains keys absent from dataset')
+    if len(manifest_splits['train']) != 1800:
+        raise ValueError('Fixed sample holdout train split must contain 1800 samples')
+    if len(manifest_splits['val']) != 200:
+        raise ValueError('Fixed sample holdout val split must contain 200 samples')
+
+    legacy_splits = split_2x2(dataset)
+    expected_train_pool = {
+        sample_key(dataset.samples[index])
+        for index in legacy_splits[0] + legacy_splits[1]
+    }
+    if set(manifest_splits['train']) | set(manifest_splits['val']) != expected_train_pool:
+        raise ValueError('Fixed sample holdout train and val must partition the 2000-sample training pool')
+
+    for split_name, expected_indices in zip(split_names[2:], legacy_splits[2:]):
+        expected_keys = {sample_key(dataset.samples[index]) for index in expected_indices}
+        if set(manifest_splits[split_name]) != expected_keys:
+            raise ValueError(f'Fixed sample holdout {split_name} membership must match 2x2 split')
+
+    return tuple(
+        [sample_indices[key] for key in manifest_splits[split_name]]
+        for split_name in split_names
+    )
+
+
+def emit_paper_event(enabled, event, **fields):
+    if enabled:
+        print(
+            PAPER_EVENT_PREFIX + json.dumps(
+                {'event': event, **fields},
+                ensure_ascii=True,
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+
+def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, seed=42, split_manifest_path=None):
     """
     2×2划分：被试维度 × 题目维度
     
@@ -258,6 +357,9 @@ def split_2x2(dataset, train_subjects=100, train_tasks=20, train_val_split=0.9, 
     Returns:
         train_indices, val_indices, test1_indices, test2_indices, test3_indices
     """
+    if split_manifest_path is not None:
+        return resolve_fixed_sample_holdout(dataset, split_manifest_path)
+
     # 获取所有被试ID并排序
     subject_ids = sorted(list(set([s['subject_id'] for s in dataset.samples])))
     
@@ -337,6 +439,20 @@ def main():
     if args.output_dir:
         config['experiment']['output_dir'] = args.output_dir
         logger.info(f"命令行覆盖: experiment.output_dir={args.output_dir}")
+
+    split_manifest_path = None
+    if 'split' in config:
+        split_config = config['split']
+        if not isinstance(split_config, dict):
+            raise ValueError('split config must be an object')
+        if split_config.get('mode') != 'fixed_sample_holdout':
+            raise ValueError(f"Unsupported explicit split.mode: {split_config.get('mode')}")
+        manifest_path = split_config.get('manifest_path')
+        if not manifest_path:
+            raise ValueError('fixed_sample_holdout requires split.manifest_path')
+        split_manifest_path = Path(manifest_path)
+        if not split_manifest_path.is_absolute():
+            split_manifest_path = config_path.parent / split_manifest_path
     
     set_seed(config['experiment']['random_seed'])
     
@@ -350,6 +466,7 @@ def main():
     output_dir = Path(config['experiment']['output_dir']) / f"{exp_name}_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"输出目录: {output_dir}")
+    emit_paper_event(args.event_stream, 'output_dir', output_dir=str(output_dir))
     
     # 加载预处理数据
     logger.info("加载预处理数据...")
@@ -376,13 +493,23 @@ def main():
     
     # 2×2划分数据集（被试 × 题目）
     logger.info("2×2划分数据集...")
-    train_indices, val_indices, test1_indices, test2_indices, test3_indices = split_2x2(
-        dataset,
-        train_subjects=config['experiment']['train_subjects'],
-        train_tasks=config['experiment']['train_tasks'],
-        train_val_split=config['training']['train_val_split'],
-        seed=config['experiment']['random_seed']
-    )
+    if split_manifest_path is None:
+        train_indices, val_indices, test1_indices, test2_indices, test3_indices = split_2x2(
+            dataset,
+            train_subjects=config['experiment']['train_subjects'],
+            train_tasks=config['experiment']['train_tasks'],
+            train_val_split=config['training']['train_val_split'],
+            seed=config['experiment']['random_seed']
+        )
+    else:
+        train_indices, val_indices, test1_indices, test2_indices, test3_indices = split_2x2(
+            dataset,
+            train_subjects=config['experiment']['train_subjects'],
+            train_tasks=config['experiment']['train_tasks'],
+            train_val_split=config['training']['train_val_split'],
+            seed=config['experiment']['random_seed'],
+            split_manifest_path=split_manifest_path,
+        )
     
     train_dataset = Subset(dataset, train_indices)
     val_dataset = Subset(dataset, val_indices)
@@ -646,6 +773,24 @@ def main():
         
         # 学习率调整
         trainer.scheduler.step(val_metrics['loss'])
+
+        emit_paper_event(
+            args.event_stream,
+            'epoch_end',
+            epoch=epoch,
+            train={
+                'loss': float(train_metrics['loss']),
+                'accuracy': float(train_metrics['accuracy']),
+                'f1_weighted': float(train_metrics['f1_weighted']),
+                'f1_macro': float(train_metrics['f1_macro']),
+            },
+            val={
+                'loss': float(val_metrics['loss']),
+                'accuracy': float(val_metrics['accuracy']),
+                'f1_weighted': float(val_metrics['f1_weighted']),
+                'f1_macro': float(val_metrics['f1_macro']),
+            },
+        )
         
         # 早停检查
         current_metric = val_metrics[early_stop_metric]
@@ -662,6 +807,8 @@ def main():
                 break
     
     print("="*85)
+
+    trainer.save_checkpoint(output_dir / 'final_model.pt', epoch, best_val_metric)
     
     # 加载最佳模型进行测试
     print(f"\n加载最佳模型 (Best Val {early_stop_metric}: {best_val_metric:.4f}) 进行测试...")
@@ -687,6 +834,7 @@ def main():
         logger.info(f"  - config.json: 配置文件")
         logger.info(f"  - history.json: 训练历史")
         logger.info(f"  - training_curves.png: 训练曲线图")
+        emit_paper_event(args.event_stream, 'completed', output_dir=str(output_dir))
         return
     
     # 定义评估集（包含同分布验证集 + 三个测试分布）
@@ -776,6 +924,7 @@ def main():
     logger.info(f"  - history.json: 训练历史")
     logger.info(f"  - training_curves.png: 训练曲线图")
     logger.info(f"  - test_results.json: 测试结果")
+    emit_paper_event(args.event_stream, 'completed', output_dir=str(output_dir))
 
 
 if __name__ == '__main__':
