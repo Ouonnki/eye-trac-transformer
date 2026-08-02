@@ -490,19 +490,19 @@ def _injected_launcher() -> Tuple[Launcher, List[int]]:
     return launch, attempts
 
 
-def _prepare_temporary_batch(temp_root: Path, smoke: bool) -> Tuple[str, Path, Path, Path, Path, Dict[str, Dict], Dict[str, Path]]:
+def _prepare_temporary_batch(temp_root: Path, smoke: bool, skip_data: bool = False) -> Tuple[str, Path, Path, Path, Path, Dict[str, Dict], Dict[str, Path]]:
     batch_id = _batch_id()
     config_dir, runs_dir, logs_dir, reports_dir = _runtime_paths(temp_root, batch_id)
     configs = _generated_configs(config_dir, runs_dir, 1 if smoke else None)
-    data_path = _data_path(configs[RUN_SPECS[0].run_id])
-    if smoke and not data_path.is_file():
-        raise RunnerError("Preflight failed: processed data does not exist: " + str(data_path))
     for path in (config_dir, runs_dir, logs_dir, reports_dir):
         path.mkdir(parents=True, exist_ok=True)
-    if smoke:
-        build_shared_split_manifest_from_data(data_path, config_dir / "shared_split_manifest.json")
+    if skip_data:
+        (config_dir / "shared_split_manifest.json").write_text("{\"schema_version\":1}\n", encoding="utf-8")
     else:
-        (config_dir / "shared_split_manifest.json").write_text("{}\n", encoding="utf-8")
+        data_path = _data_path(configs[RUN_SPECS[0].run_id])
+        if not data_path.is_file():
+            raise RunnerError("Preflight failed: processed data does not exist: " + str(data_path))
+        build_shared_split_manifest_from_data(data_path, config_dir / "shared_split_manifest.json")
     config_paths = _write_configs(configs, config_dir, smoke)
     return batch_id, config_dir, runs_dir, logs_dir, reports_dir, configs, config_paths
 
@@ -513,8 +513,9 @@ def _run_batch(
     launcher: Launcher,
     selected_ids: Sequence[str],
     smoke: bool,
+    skip_data: bool = False,
 ) -> int:
-    batch_id, config_dir, runs_dir, logs_dir, reports_dir, configs, config_paths = _prepare_temporary_batch(runtime_root, smoke)
+    batch_id, config_dir, runs_dir, logs_dir, reports_dir, configs, config_paths = _prepare_temporary_batch(runtime_root, smoke, skip_data)
     del config_dir
     started = datetime.now()
     outcomes: List[RunOutcome] = []
@@ -580,7 +581,7 @@ def _run_injected_failure() -> int:
         launcher, attempts = _injected_launcher()
         exit_code = _run_batch(
             "injected-failure", Path(temporary), launcher,
-            tuple(spec.run_id for spec in RUN_SPECS), False,
+            tuple(spec.run_id for spec in RUN_SPECS), False, skip_data=True,
         )
         failures = 1
         if len(attempts) != 14:
