@@ -13,7 +13,8 @@
    - 10 折轮转后每个训练样本恰好当过一次 val（覆盖全部 2000 样本）
 
 训练/评估与 train_task_level 完全一致（TaskLevelEncoder + TaskLevelTrainer，
-早停 val_f1_macro，评估 loss/acc/f1_weighted/f1_macro/spearman）。
+早停 val_f1_macro，评估 loss/ACC/Macro-F1/G-Mean/AUC-PR/QWK，并保留
+f1_weighted/spearman）。
 
 用法：
     python scripts/train_task_level_cv.py --config configs/task_level_ordinal_manual11_bilstm.json
@@ -40,6 +41,8 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from scipy.stats import spearmanr
+from sklearn.metrics import recall_score, average_precision_score, cohen_kappa_score
+from sklearn.preprocessing import label_binarize
 
 # 添加项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -148,14 +151,52 @@ def get_ordinal_pos_weight(config):
     raise ValueError(f"不支持的 ordinal_pos_weight_mode: {mode}")
 
 
+def compute_gmean(labels, predictions):
+    """多分类 G-Mean：各类别 recall 的几何均值。"""
+    labels = np.asarray(labels, dtype=int)
+    predictions = np.asarray(predictions, dtype=int)
+    classes = np.unique(labels)
+    recalls = recall_score(
+        labels, predictions, labels=classes, average=None, zero_division=0
+    )
+    if recalls.size == 0 or np.any(recalls <= 0):
+        return 0.0
+    return float(np.exp(np.mean(np.log(recalls))))
+
+
+def safe_auc_pr(labels, probabilities):
+    """多分类 AUC-PR：One-vs-Rest macro average precision。"""
+    labels = np.asarray(labels, dtype=int)
+    probabilities = np.asarray(probabilities, dtype=float)
+    num_classes = probabilities.shape[1]
+    y_true_bin = label_binarize(labels, classes=list(range(num_classes)))
+    if y_true_bin.ndim == 1:
+        y_true_bin = y_true_bin.reshape(-1, 1)
+    try:
+        value = average_precision_score(y_true_bin, probabilities, average='macro')
+    except ValueError:
+        value = 0.0
+    if value is None or np.isnan(value):
+        return 0.0
+    return float(value)
+
+
 def evaluate_sets(trainer, eval_sets):
-    """对 [('name', loader), ...] 逐集评估，附加 spearman。返回 {name: metrics}。"""
+    """逐集评估，补充 Spearman、G-Mean、AUC-PR、QWK。"""
     results = {}
     for name, loader in eval_sets:
         metrics = trainer.evaluate(loader, desc=name)
-        spearman_corr, spearman_p = spearmanr(metrics['labels'], metrics['predictions'])
+        labels = np.asarray(metrics['labels'], dtype=int)
+        predictions = np.asarray(metrics['predictions'], dtype=int)
+        probabilities = np.asarray(metrics['probabilities'], dtype=float)
+        spearman_corr, spearman_p = spearmanr(labels, predictions)
         metrics['spearman'] = float(spearman_corr)
         metrics['spearman_p'] = float(spearman_p)
+        metrics['g_mean'] = compute_gmean(labels, predictions)
+        metrics['auc_pr'] = safe_auc_pr(labels, probabilities)
+        metrics['qwk'] = float(
+            cohen_kappa_score(labels, predictions, weights='quadratic')
+        )
         results[name] = metrics
     return results
 
@@ -322,6 +363,9 @@ def train_one_fold(
             'accuracy': metrics['accuracy'],
             'f1_weighted': metrics['f1_weighted'],
             'f1_macro': metrics['f1_macro'],
+            'g_mean': metrics['g_mean'],
+            'auc_pr': metrics['auc_pr'],
+            'qwk': metrics['qwk'],
             'spearman': metrics['spearman'],
             'spearman_p': metrics['spearman_p'],
             'predictions': [int(p) for p in metrics['predictions']],
@@ -343,7 +387,9 @@ def train_one_fold(
         fold_summary[name] = {
             'loss': float(metrics['loss']), 'accuracy': float(metrics['accuracy']),
             'f1_weighted': float(metrics['f1_weighted']), 'f1_macro': float(metrics['f1_macro']),
-            'spearman': float(metrics['spearman']), 'spearman_p': float(metrics['spearman_p']),
+            'g_mean': float(metrics['g_mean']), 'auc_pr': float(metrics['auc_pr']),
+            'qwk': float(metrics['qwk']), 'spearman': float(metrics['spearman']),
+            'spearman_p': float(metrics['spearman_p']),
         }
     return fold_summary
 
@@ -379,7 +425,8 @@ def resume_fold_summary(fold_dir, early_stop_metric):
           f'best_val_{early_stop_metric}': best_metric}
     for name, m in tr.items():
         fs[name] = {k2: float(m[k2]) for k2 in
-                    ('loss', 'accuracy', 'f1_weighted', 'f1_macro', 'spearman', 'spearman_p')}
+                    ('loss', 'accuracy', 'f1_weighted', 'f1_macro', 'g_mean',
+                     'auc_pr', 'qwk', 'spearman', 'spearman_p')}
     return fs
 
 
@@ -466,7 +513,10 @@ def main():
 
     # ---- 汇总 ----
     split_names = ["Val (同分布)", "Test1 (新被试+旧题)", "Test2 (旧被试+新题)", "Test3 (新被试+新题)"]
-    metric_names = ['loss', 'accuracy', 'f1_weighted', 'f1_macro', 'spearman']
+    metric_names = [
+        'loss', 'accuracy', 'f1_weighted', 'f1_macro',
+        'g_mean', 'auc_pr', 'qwk', 'spearman',
+    ]
     cv_summary = {
         'n_folds': n_folds,
         'fold_by': args.fold_by,
@@ -481,20 +531,45 @@ def main():
     with open(out_root / 'config.json', 'w') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
+    # ---- 保存论文表格指标 ----
+    table_lines = [
+        '# Task-level 10-fold CV metrics',
+        '',
+        '| Split | ACC | Macro-F1 | G-Mean | AUC-PR | QWK |',
+        '|---|---:|---:|---:|---:|---:|',
+    ]
+    for split in split_names:
+        s = cv_summary['summary'][split]
+        cells = [
+            f"{s[metric]['mean']:.4f} ± {s[metric]['std']:.4f}"
+            for metric in ('accuracy', 'f1_macro', 'g_mean', 'auc_pr', 'qwk')
+        ]
+        table_lines.append(f"| {split} | " + ' | '.join(cells) + ' |')
+    table_lines.extend([
+        '',
+        'Definitions: G-Mean = geometric mean of per-class recall; '
+        'AUC-PR = macro one-vs-rest average precision; '
+        'QWK = quadratic weighted Cohen kappa.',
+    ])
+    (out_root / 'cv_metrics_table.md').write_text(
+        '\n'.join(table_lines) + '\n', encoding='utf-8'
+    )
+
     # ---- 打印汇总表 ----
     print("\n" + "=" * 95)
     print("十折交叉验证结果汇总 (mean ± std)")
     print("=" * 95)
-    header = f"{'数据集':<25} {'Acc':<14} {'F1(Weighted)':<16} {'F1(Macro)':<16} {'Spearman':<14}"
+    header = f"{'数据集':<25} {'ACC':<14} {'Macro-F1':<14} {'G-Mean':<14} {'AUC-PR':<14} {'QWK':<14}"
     print(header)
-    print("-" * 95)
+    print("-" * 110)
     for split in split_names:
         s = cv_summary['summary'][split]
         print(f"{split:<25} "
               f"{s['accuracy']['mean']:.4f}±{s['accuracy']['std']:.4f}   "
-              f"{s['f1_weighted']['mean']:.4f}±{s['f1_weighted']['std']:.4f}   "
               f"{s['f1_macro']['mean']:.4f}±{s['f1_macro']['std']:.4f}   "
-              f"{s['spearman']['mean']:.4f}±{s['spearman']['std']:.4f}")
+              f"{s['g_mean']['mean']:.4f}±{s['g_mean']['std']:.4f}   "
+              f"{s['auc_pr']['mean']:.4f}±{s['auc_pr']['std']:.4f}   "
+              f"{s['qwk']['mean']:.4f}±{s['qwk']['std']:.4f}")
     print("=" * 95)
     logger.info(f"完成! 结果保存在: {out_root}")
 
