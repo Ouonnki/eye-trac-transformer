@@ -151,7 +151,13 @@ class DataLoader:
         if isinstance(value, (int, float)):
             return bool(value)
         if isinstance(value, str):
-            return value.lower() in ('是', 'yes', 'true', '1')
+            v = value.strip()
+            # 支持 '✔'/'√' (真) 和 '×' (假) 等符号，兼容中文/英文关键字
+            if v in ('✔', '√', '✓'):
+                return True
+            if v in ('×', '✗', '✘'):
+                return False
+            return v.lower() in ('是', 'yes', 'true', '1')
         return False
 
     def get_task_config(self, task_id: int) -> TaskConfig:
