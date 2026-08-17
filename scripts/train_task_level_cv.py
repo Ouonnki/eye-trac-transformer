@@ -82,6 +82,8 @@ def parse_args():
                         help="分折单位（当前仅样本级 StratifiedKFold）")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="覆盖 config 的 experiment.output_dir")
+    parser.add_argument("--resume-dir", type=str, default=None,
+                        help="指定已有输出目录直接续跑（跳过已完成的 fold）")
     parser.add_argument("--seed", type=int, default=None,
                         help="覆盖随机种子（默认用 config 的 random_seed，全折固定）")
     return parser.parse_args()
@@ -299,7 +301,7 @@ def train_one_fold(
                       f"(Best Val {early_stop_metric}: {best_val_metric:.4f})")
                 break
 
-    best_epoch = np.argmax(history[f'val_{early_stop_metric}']) + 1 if history[f'val_{early_stop_metric}'] else 0
+    best_epoch = int(np.argmax(history[f'val_{early_stop_metric}']) + 1) if history[f'val_{early_stop_metric}'] else 0
     trainer.save_checkpoint(fold_dir / 'final_model.pt', epoch, best_val_metric)
 
     # ---- 评估 best 模型 ----
@@ -334,14 +336,14 @@ def train_one_fold(
 
     plot_training_curves(history, fold_dir / 'training_curves.png', best_epoch, early_stop_metric)
 
-    # 精简指标（不含 predictions/labels，避免 summary 过大）
-    fold_summary = {'fold': fold_k, 'best_epoch': best_epoch,
+    # 精简指标（不含 predictions/labels，避免 summary 过大）—— 全部转 Python 原生类型
+    fold_summary = {'fold': int(fold_k), 'best_epoch': best_epoch,
                     f'best_val_{early_stop_metric}': float(best_val_metric)}
     for name, metrics in eval_results.items():
         fold_summary[name] = {
-            'loss': metrics['loss'], 'accuracy': metrics['accuracy'],
-            'f1_weighted': metrics['f1_weighted'], 'f1_macro': metrics['f1_macro'],
-            'spearman': metrics['spearman'], 'spearman_p': metrics['spearman_p'],
+            'loss': float(metrics['loss']), 'accuracy': float(metrics['accuracy']),
+            'f1_weighted': float(metrics['f1_weighted']), 'f1_macro': float(metrics['f1_macro']),
+            'spearman': float(metrics['spearman']), 'spearman_p': float(metrics['spearman_p']),
         }
     return fold_summary
 
@@ -352,13 +354,33 @@ def aggregate(fold_summaries, split_names, metric_names):
     for split in split_names:
         summary[split] = {}
         for metric in metric_names:
-            values = [f[split][metric] for f in fold_summaries]
+            values = [float(f[split][metric]) for f in fold_summaries]
             summary[split][metric] = {
                 'values': values,
                 'mean': float(np.mean(values)),
                 'std': float(np.std(values)),
             }
     return summary
+
+
+def resume_fold_summary(fold_dir, early_stop_metric):
+    """从已有 fold 输出重建 fold_summary（用于断点续跑）。"""
+    with open(fold_dir / 'test_results.json') as f:
+        tr = json.load(f)
+    with open(fold_dir / 'history.json') as f:
+        hist = json.load(f)
+    key = f'val_{early_stop_metric}'
+    if key in hist and hist[key]:
+        best_metric = float(max(hist[key]))
+        best_epoch = int(np.argmax(hist[key]) + 1)
+    else:
+        best_metric, best_epoch = 0.0, 0
+    fs = {'fold': int(fold_dir.name.split('_')[1]), 'best_epoch': best_epoch,
+          f'best_val_{early_stop_metric}': best_metric}
+    for name, m in tr.items():
+        fs[name] = {k2: float(m[k2]) for k2 in
+                    ('loss', 'accuracy', 'f1_weighted', 'f1_macro', 'spearman', 'spearman_p')}
+    return fs
 
 
 def main():
@@ -407,16 +429,28 @@ def main():
     logger.info(f"每折 val 大小: {sizes} (覆盖全部训练样本: {sum(sizes) == len(train_pool)})")
 
     # ---- 输出目录 ----
-    base_out = args.output_dir or config['experiment']['output_dir']
-    exp_name = config['experiment'].get('name', 'exp')
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_root = Path(base_out) / f"{exp_name}_cv{n_folds}fold_{timestamp}"
-    out_root.mkdir(parents=True, exist_ok=True)
+    if args.resume_dir:
+        out_root = Path(args.resume_dir)
+        out_root.mkdir(parents=True, exist_ok=True)
+        logger.info(f"续跑模式，输出目录: {out_root}")
+    else:
+        base_out = args.output_dir or config['experiment']['output_dir']
+        exp_name = config['experiment'].get('name', 'exp')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        out_root = Path(base_out) / f"{exp_name}_cv{n_folds}fold_{timestamp}"
+        out_root.mkdir(parents=True, exist_ok=True)
 
-    # ---- 逐折训练 ----
+    # ---- 逐折训练（已有输出的折自动跳过，用于断点续跑） ----
     fold_summaries = []
     for k, (tr_pos, va_pos) in enumerate(folds, start=1):
         fold_dir = out_root / f"fold_{k:02d}"
+        if (fold_dir / 'test_results.json').exists():
+            print(f"fold_{k:02d} 已存在，跳过（resume）")
+            fs = resume_fold_summary(fold_dir, config['training'].get('early_stop_metric', 'f1_weighted'))
+            with open(fold_dir / 'fold_summary.json', 'w') as f:
+                json.dump(fs, f, indent=2, ensure_ascii=False)
+            fold_summaries.append(fs)
+            continue
         fold_dir.mkdir(parents=True, exist_ok=True)
         train_idx = [train_pool[i] for i in tr_pos]
         val_idx = [train_pool[i] for i in va_pos]
