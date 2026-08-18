@@ -6,7 +6,7 @@ import pickle
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Final, List, Optional, Protocol, TypedDict, Union
+from typing import Dict, Final, List, Literal, Optional, Protocol, TypedDict, Union
 
 import numpy as np
 
@@ -20,6 +20,8 @@ TRAIN_TASK_COUNT: Final = 20
 TOTAL_TASK_COUNT: Final = 30
 TRAIN_SAMPLE_COUNT: Final = 1800
 VAL_SAMPLE_COUNT: Final = 200
+VAL_SUBJECT_COUNT: Final = 10
+ValSplitUnit = Literal["sample", "subject"]
 
 
 class TaskSample(TypedDict):
@@ -49,12 +51,14 @@ class SplitManifest:
     test1: tuple[SampleIdentity, ...]
     test2: tuple[SampleIdentity, ...]
     test3: tuple[SampleIdentity, ...]
+    val_split_unit: ValSplitUnit = "sample"
 
     def to_json(self) -> JsonObject:
         return {
             "schema_version": 1,
             "seed": self.seed,
             "dataset_fingerprint": self.dataset_fingerprint,
+            "val_split_unit": self.val_split_unit,
             "train": _serialize_samples(self.train),
             "val": _serialize_samples(self.val),
             "test1": _serialize_samples(self.test1),
@@ -134,30 +138,88 @@ def generate_derived_configs(options: ConfigGenerationOptions) -> dict[str, Json
     return generated
 
 
-def build_shared_split_manifest(dataset: SampleDataset) -> SplitManifest:
-    """Create the seed-42 fixed-sample manifest for the canonical 2x2 pools."""
-    identities = tuple(sorted(SampleIdentity(str(sample["subject_id"]), int(sample["task_id"])) for sample in dataset.samples))
+def build_shared_split_manifest(
+    dataset: SampleDataset,
+    val_split_unit: ValSplitUnit = "sample",
+) -> SplitManifest:
+    """Create the seed-42 fixed holdout for canonical 2x2 pools."""
+    identities = tuple(
+        sorted(
+            SampleIdentity(str(sample["subject_id"]), int(sample["task_id"]))
+            for sample in dataset.samples
+        )
+    )
     if len(set(identities)) != len(identities):
         raise ExperimentPlanError(Path("dataset"), "duplicate subject/task sample identity")
     subjects = tuple(sorted({identity.subject_id for identity in identities}))
     if len(subjects) < TRAIN_SUBJECT_COUNT:
         raise ExperimentPlanError(Path("dataset"), "fewer than 100 subjects")
-    train_subjects = frozenset(subjects[:TRAIN_SUBJECT_COUNT])
+    train_subject_ids = subjects[:TRAIN_SUBJECT_COUNT]
+    train_subjects = frozenset(train_subject_ids)
     train_tasks = frozenset(range(1, TRAIN_TASK_COUNT + 1))
     test_tasks = frozenset(range(TRAIN_TASK_COUNT + 1, TOTAL_TASK_COUNT + 1))
-    train_pool = tuple(identity for identity in identities if identity.subject_id in train_subjects and identity.task_id in train_tasks)
+    train_pool = tuple(
+        identity
+        for identity in identities
+        if identity.subject_id in train_subjects and identity.task_id in train_tasks
+    )
     if len(train_pool) != TRAIN_SAMPLE_COUNT + VAL_SAMPLE_COUNT:
         raise ExperimentPlanError(Path("dataset"), "expected 2000 samples in the training pool")
-    permutation = np.random.RandomState(SEED).permutation(len(train_pool))
-    train = tuple(train_pool[index] for index in permutation[:TRAIN_SAMPLE_COUNT])
-    val = tuple(train_pool[index] for index in permutation[TRAIN_SAMPLE_COUNT:])
+
+    if val_split_unit == "sample":
+        permutation = np.random.RandomState(SEED).permutation(len(train_pool))
+        train = tuple(train_pool[index] for index in permutation[:TRAIN_SAMPLE_COUNT])
+        val = tuple(train_pool[index] for index in permutation[TRAIN_SAMPLE_COUNT:])
+    elif val_split_unit == "subject":
+        subject_permutation = np.random.RandomState(SEED).permutation(train_subject_ids)
+        val_subjects = frozenset(
+            str(subject_id) for subject_id in subject_permutation[:VAL_SUBJECT_COUNT]
+        )
+        train = tuple(
+            identity for identity in train_pool if identity.subject_id not in val_subjects
+        )
+        val = tuple(
+            identity for identity in train_pool if identity.subject_id in val_subjects
+        )
+        if len({identity.subject_id for identity in val}) != VAL_SUBJECT_COUNT:
+            raise ExperimentPlanError(Path("dataset"), "expected 10 validation subjects")
+        if {identity.subject_id for identity in train} & val_subjects:
+            raise ExperimentPlanError(Path("dataset"), "train/validation subject leakage")
+    else:
+        raise ExperimentPlanError(
+            Path("dataset"), f"unsupported validation split unit: {val_split_unit}"
+        )
+
     test_subjects = frozenset(subjects[TRAIN_SUBJECT_COUNT:])
-    test1 = tuple(identity for identity in identities if identity.subject_id in test_subjects and identity.task_id in train_tasks)
-    test2 = tuple(identity for identity in identities if identity.subject_id in train_subjects and identity.task_id in test_tasks)
-    test3 = tuple(identity for identity in identities if identity.subject_id in test_subjects and identity.task_id in test_tasks)
+    test1 = tuple(
+        identity
+        for identity in identities
+        if identity.subject_id in test_subjects and identity.task_id in train_tasks
+    )
+    test2 = tuple(
+        identity
+        for identity in identities
+        if identity.subject_id in train_subjects and identity.task_id in test_tasks
+    )
+    test3 = tuple(
+        identity
+        for identity in identities
+        if identity.subject_id in test_subjects and identity.task_id in test_tasks
+    )
     if len(train) != TRAIN_SAMPLE_COUNT or len(val) != VAL_SAMPLE_COUNT:
-        raise ExperimentPlanError(Path("dataset"), "expected 1800 train and 200 validation samples")
-    return SplitManifest(SEED, _dataset_fingerprint(identities), train, val, test1, test2, test3)
+        raise ExperimentPlanError(
+            Path("dataset"), "expected 1800 train and 200 validation samples"
+        )
+    return SplitManifest(
+        SEED,
+        _dataset_fingerprint(identities),
+        train,
+        val,
+        test1,
+        test2,
+        test3,
+        val_split_unit,
+    )
 
 
 def write_shared_split_manifest(manifest: SplitManifest, manifest_path: Path) -> Path:
@@ -168,7 +230,11 @@ def write_shared_split_manifest(manifest: SplitManifest, manifest_path: Path) ->
     return absolute_path
 
 
-def build_shared_split_manifest_from_data(processed_data_path: Path, manifest_path: Path) -> Path:
+def build_shared_split_manifest_from_data(
+    processed_data_path: Path,
+    manifest_path: Path,
+    val_split_unit: ValSplitUnit = "sample",
+) -> Path:
     """Construct the task-level dataset exactly as training does, then write its manifest."""
     from src.models.task_level_dataset import TaskLevelGazeDataset, TaskLevelSequenceConfig
 
@@ -179,7 +245,10 @@ def build_shared_split_manifest_from_data(processed_data_path: Path, manifest_pa
         config=TaskLevelSequenceConfig(max_seq_len=300, max_segments=25),
         fit_normalizer=False,
     )
-    return write_shared_split_manifest(build_shared_split_manifest(dataset), manifest_path)
+    return write_shared_split_manifest(
+        build_shared_split_manifest(dataset, val_split_unit=val_split_unit),
+        manifest_path,
+    )
 
 
 def _load_template(template_path: Path) -> JsonObject:

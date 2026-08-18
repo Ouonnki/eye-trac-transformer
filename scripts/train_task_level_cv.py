@@ -8,9 +8,10 @@
    - test1 = 后57被试 × 前20题（新被试+旧题）
    - test2 = 前100被试 × 后10题（旧被试+新题）
    - test3 = 后57被试 × 后10题（新被试+新题）
-2. 样本级十折（StratifiedKFold, shuffle=True, 固定 seed）：
-   - 在 train_pool (2000 样本) 上分 10 折，每折 val = 200 样本（10%），train = 1800 样本
-   - 10 折轮转后每个训练样本恰好当过一次 val（覆盖全部 2000 样本）
+2. 十折支持两种模式：
+   - sample：StratifiedKFold，随机留出 200 个 subject-task 样本
+   - subject：随机打乱前 100 名被试，每折完整留出 10 人（200 样本）
+   - 两种模式均为每折 train=1800、val=200，并覆盖全部 2000 个训练池样本
 
 训练/评估与 train_task_level 完全一致（TaskLevelEncoder + TaskLevelTrainer，
 早停 val_f1_macro，评估 loss/ACC/Macro-F1/G-Mean/AUC-PR/QWK，并保留
@@ -19,6 +20,7 @@ f1_weighted/spearman）。
 用法：
     python scripts/train_task_level_cv.py --config configs/task_level_ordinal_manual11_bilstm.json
     python scripts/train_task_level_cv.py --folds 10 --fold-by sample --output-dir outputs/task_level_cv
+    python scripts/train_task_level_cv.py --config configs/task_level_classification_manual11_bilstm.json --fold-by subject
 
 输出：
     <output_dir>/<exp_name>_cv<folds>fold_<timestamp>/
@@ -65,6 +67,7 @@ from scripts.train_task_level import (
     compute_ordinal_pos_weight,
     plot_training_curves,
     split_2x2,
+    dataset_fingerprint,
     Subset,
 )
 
@@ -81,8 +84,15 @@ def parse_args():
     parser.add_argument("--data", type=str, default=None,
                         help="覆盖 config 的 processed 数据路径")
     parser.add_argument("--folds", type=int, default=10, help="交叉验证折数")
-    parser.add_argument("--fold-by", choices=["sample"], default="sample",
-                        help="分折单位（当前仅样本级 StratifiedKFold）")
+    parser.add_argument(
+        "--fold-by",
+        choices=["sample", "subject"],
+        default="sample",
+        help=(
+            "sample=样本级 StratifiedKFold；subject=随机完整留出被试，"
+            "10折时每折10人/200样本"
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default=None,
                         help="覆盖 config 的 experiment.output_dir")
     parser.add_argument("--resume-dir", type=str, default=None,
@@ -107,10 +117,84 @@ def build_2x2_pool(dataset, train_subjects=100, train_tasks=20, seed=42):
 
 
 def make_sample_folds(pool_indices, labels, n_folds, seed):
-    """样本级 StratifiedKFold。返回 [(train_idx, val_idx), ...]（均为 pool 内位置）。"""
+    """样本级 StratifiedKFold；返回的索引均为 pool 内位置。"""
     from sklearn.model_selection import StratifiedKFold
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
     return list(skf.split(pool_indices, labels))
+
+
+def make_subject_folds(pool_indices, dataset, n_folds, seed):
+    """按被试随机分折；每名被试的全部任务只出现在一个 Val fold。"""
+    subjects = tuple(
+        sorted({dataset.samples[index]['subject_id'] for index in pool_indices})
+    )
+    if len(subjects) % n_folds != 0:
+        raise ValueError(
+            f'被试数 {len(subjects)} 不能均分为 {n_folds} 折'
+        )
+    permutation = np.random.RandomState(seed).permutation(subjects)
+    subject_groups = np.split(permutation, n_folds)
+    folds = []
+    for group in subject_groups:
+        val_subjects = {str(subject_id) for subject_id in group.tolist()}
+        val_positions = np.asarray(
+            [
+                position
+                for position, index in enumerate(pool_indices)
+                if dataset.samples[index]['subject_id'] in val_subjects
+            ],
+            dtype=int,
+        )
+        train_positions = np.asarray(
+            [
+                position
+                for position, index in enumerate(pool_indices)
+                if dataset.samples[index]['subject_id'] not in val_subjects
+            ],
+            dtype=int,
+        )
+        folds.append((train_positions, val_positions))
+    return folds
+
+
+def write_fold_manifest(path, dataset, train_pool, folds, fold_by, seed):
+    """保存每折 subject/sample 成员，确保实验可复算。"""
+    payload = {
+        'schema_version': 1,
+        'fold_by': fold_by,
+        'seed': seed,
+        'dataset_fingerprint': dataset_fingerprint(dataset),
+        'folds': [],
+    }
+    for fold_number, (train_positions, val_positions) in enumerate(folds, start=1):
+        train_indices = [train_pool[int(position)] for position in train_positions]
+        val_indices = [train_pool[int(position)] for position in val_positions]
+        payload['folds'].append(
+            {
+                'fold': fold_number,
+                'train_subject_ids': sorted(
+                    {dataset.samples[index]['subject_id'] for index in train_indices}
+                ),
+                'val_subject_ids': sorted(
+                    {dataset.samples[index]['subject_id'] for index in val_indices}
+                ),
+                'train': [
+                    {
+                        'subject_id': dataset.samples[index]['subject_id'],
+                        'task_id': int(dataset.samples[index]['task_id']),
+                    }
+                    for index in train_indices
+                ],
+                'val': [
+                    {
+                        'subject_id': dataset.samples[index]['subject_id'],
+                        'task_id': int(dataset.samples[index]['task_id']),
+                    }
+                    for index in val_indices
+                ],
+            }
+        )
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n')
 
 
 def build_loader(dataset, indices, batch_size, num_workers, shuffle=False, sampler=None):
@@ -470,10 +554,28 @@ def main():
     logger.info(f"test1: {len(test1)} | test2: {len(test2)} | test3: {len(test3)}")
 
     # ---- 十折 ----
-    folds = make_sample_folds(train_pool, pool_labels, n_folds, seed)
-    sizes = [len(v) for _, v in folds]
+    if args.fold_by == 'subject':
+        folds = make_subject_folds(train_pool, dataset, n_folds, seed)
+    else:
+        folds = make_sample_folds(train_pool, pool_labels, n_folds, seed)
+    sizes = [len(val_positions) for _, val_positions in folds]
     assert all(s == len(train_pool) // n_folds for s in sizes), f"折大小不均: {sizes}"
-    logger.info(f"每折 val 大小: {sizes} (覆盖全部训练样本: {sum(sizes) == len(train_pool)})")
+    logger.info(
+        f"每折 val 大小: {sizes} "
+        f"(fold_by={args.fold_by}, 覆盖全部训练样本: {sum(sizes) == len(train_pool)})"
+    )
+    if args.fold_by == 'subject':
+        subject_counts = [
+            len(
+                {
+                    dataset.samples[train_pool[int(position)]]['subject_id']
+                    for position in val_positions
+                }
+            )
+            for _, val_positions in folds
+        ]
+        assert all(count == 10 for count in subject_counts), subject_counts
+        logger.info(f"每折完整 Val 被试数: {subject_counts}")
 
     # ---- 输出目录 ----
     if args.resume_dir:
@@ -484,8 +586,17 @@ def main():
         base_out = args.output_dir or config['experiment']['output_dir']
         exp_name = config['experiment'].get('name', 'exp')
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        out_root = Path(base_out) / f"{exp_name}_cv{n_folds}fold_{timestamp}"
+        out_root = Path(base_out) / f"{exp_name}_{args.fold_by}_cv{n_folds}fold_{timestamp}"
         out_root.mkdir(parents=True, exist_ok=True)
+
+    write_fold_manifest(
+        out_root / 'split_manifest.json',
+        dataset,
+        train_pool,
+        folds,
+        args.fold_by,
+        seed,
+    )
 
     # ---- 逐折训练（已有输出的折自动跳过，用于断点续跑） ----
     fold_summaries = []

@@ -35,6 +35,7 @@ from paper_experiment_rerun.experiment_plan import (
     ConfigGenerationOptions,
     ExperimentPlanError,
     RUN_SPECS,
+    ValSplitUnit,
     build_shared_split_manifest_from_data,
     generate_derived_configs,
 )
@@ -112,6 +113,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         choices=("run", "dry-run", "injected-failure", "smoke"),
         default="run",
         help="run all experiments, validate commands only, exercise fake failure, or run FULL_BILSTM smoke",
+    )
+    parser.add_argument(
+        "--val-split-unit",
+        choices=("sample", "subject"),
+        default="sample",
+        help=(
+            "sample randomly holds out 200 subject-task samples; subject randomly "
+            "holds out 10 complete subjects (200 samples)"
+        ),
     )
     return parser.parse_args(argv)
 
@@ -490,7 +500,12 @@ def _injected_launcher() -> Tuple[Launcher, List[int]]:
     return launch, attempts
 
 
-def _prepare_temporary_batch(temp_root: Path, smoke: bool, skip_data: bool = False) -> Tuple[str, Path, Path, Path, Path, Dict[str, Dict], Dict[str, Path]]:
+def _prepare_temporary_batch(
+    temp_root: Path,
+    smoke: bool,
+    skip_data: bool = False,
+    val_split_unit: ValSplitUnit = "sample",
+) -> Tuple[str, Path, Path, Path, Path, Dict[str, Dict], Dict[str, Path]]:
     batch_id = _batch_id()
     config_dir, runs_dir, logs_dir, reports_dir = _runtime_paths(temp_root, batch_id)
     configs = _generated_configs(config_dir, runs_dir, 1 if smoke else None)
@@ -502,7 +517,11 @@ def _prepare_temporary_batch(temp_root: Path, smoke: bool, skip_data: bool = Fal
         data_path = _data_path(configs[RUN_SPECS[0].run_id])
         if not data_path.is_file():
             raise RunnerError("Preflight failed: processed data does not exist: " + str(data_path))
-        build_shared_split_manifest_from_data(data_path, config_dir / "shared_split_manifest.json")
+        build_shared_split_manifest_from_data(
+            data_path,
+            config_dir / "shared_split_manifest.json",
+            val_split_unit=val_split_unit,
+        )
     config_paths = _write_configs(configs, config_dir, smoke)
     return batch_id, config_dir, runs_dir, logs_dir, reports_dir, configs, config_paths
 
@@ -514,8 +533,14 @@ def _run_batch(
     selected_ids: Sequence[str],
     smoke: bool,
     skip_data: bool = False,
+    val_split_unit: ValSplitUnit = "sample",
 ) -> int:
-    batch_id, config_dir, runs_dir, logs_dir, reports_dir, configs, config_paths = _prepare_temporary_batch(runtime_root, smoke, skip_data)
+    batch_id, config_dir, runs_dir, logs_dir, reports_dir, configs, config_paths = _prepare_temporary_batch(
+        runtime_root,
+        smoke,
+        skip_data,
+        val_split_unit=val_split_unit,
+    )
     del config_dir
     started = datetime.now()
     outcomes: List[RunOutcome] = []
@@ -590,17 +615,24 @@ def _run_injected_failure() -> int:
         return 0 if exit_code == 1 else exit_code
 
 
-def _run_smoke() -> int:
+def _run_smoke(val_split_unit: ValSplitUnit = "sample") -> int:
     configs = _generated_configs(Path("smoke-configs"), Path("smoke-runs"), 1)
     data_path = _data_path(configs[RUN_SPECS[0].run_id])
     if not data_path.is_file():
         print("Preflight failed: processed data does not exist: " + str(data_path), file=sys.stderr)
         return 2
     with TemporaryDirectory(prefix="paper-experiment-smoke-") as temporary:
-        return _run_batch("smoke", Path(temporary), _subprocess_launcher, ("FULL_BILSTM",), True)
+        return _run_batch(
+            "smoke",
+            Path(temporary),
+            _subprocess_launcher,
+            ("FULL_BILSTM",),
+            True,
+            val_split_unit=val_split_unit,
+        )
 
 
-def _run_production() -> int:
+def _run_production(val_split_unit: ValSplitUnit = "sample") -> int:
     batch_id = _batch_id()
     config_dir, runs_dir, _, _ = _runtime_paths(PROJECT_ROOT / "paper_experiment_rerun", batch_id)
     try:
@@ -612,20 +644,29 @@ def _run_production() -> int:
     if not data_path.is_file():
         print("Preflight failed: processed data does not exist: " + str(data_path), file=sys.stderr)
         return 2
-    return _run_batch("run", PROJECT_ROOT / "paper_experiment_rerun", _subprocess_launcher, tuple(spec.run_id for spec in RUN_SPECS), False)
+    return _run_batch(
+        "run",
+        PROJECT_ROOT / "paper_experiment_rerun",
+        _subprocess_launcher,
+        tuple(spec.run_id for spec in RUN_SPECS),
+        False,
+        val_split_unit=val_split_unit,
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Execute requested mode; only this CLI boundary handles unexpected errors."""
     try:
-        mode = parse_args(argv).mode
+        args = parse_args(argv)
+        mode = args.mode
+        val_split_unit: ValSplitUnit = args.val_split_unit
         if mode == "dry-run":
             return _dry_run()
         if mode == "injected-failure":
             return _run_injected_failure()
         if mode == "smoke":
-            return _run_smoke()
-        return _run_production()
+            return _run_smoke(val_split_unit)
+        return _run_production(val_split_unit)
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
         return 130
