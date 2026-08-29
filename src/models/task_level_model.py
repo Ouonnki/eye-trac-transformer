@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.models.encoders import GazeTransformerEncoder, GazeCnnEncoder, GazeRnnEncoder
 from src.models.attention import AttentionPooling
@@ -59,6 +60,9 @@ class TaskLevelEncoder(nn.Module):
         num_classes: int = 3,
         head_type: str = "classification",
         use_gradient_checkpointing: bool = False,
+        use_output_norm: bool = False,
+        task_embedding_normalize: bool = False,
+        use_conditional_cutpoints: bool = False,
     ):
         super().__init__()
 
@@ -73,6 +77,13 @@ class TaskLevelEncoder(nn.Module):
             raise ValueError(f"不支持的 head_type: {self.head_type}")
         if self.head_type == "ordinal" and self.num_classes < 2:
             raise ValueError("ordinal 模式要求 num_classes >= 2")
+        self.use_output_norm = use_output_norm
+        self.task_embedding_normalize = task_embedding_normalize
+        self.use_conditional_cutpoints = use_conditional_cutpoints
+        if self.use_conditional_cutpoints and self.head_type != "ordinal":
+            raise ValueError("use_conditional_cutpoints 仅在 ordinal 模式下支持")
+        if self.use_conditional_cutpoints and not use_task_embedding:
+            raise ValueError("use_conditional_cutpoints 需要 use_task_embedding=true")
         
         # 1. 片段编码器
         if not segment_encoder_type:
@@ -109,6 +120,7 @@ class TaskLevelEncoder(nn.Module):
                 dropout=segment_rnn_dropout,
                 bidirectional=self.segment_encoder_type == "bilstm",
                 output_dim=segment_d_model,
+                use_output_norm=use_output_norm,
             )
         else:
             raise ValueError(f"不支持的片段编码器类型: {self.segment_encoder_type}")
@@ -126,6 +138,7 @@ class TaskLevelEncoder(nn.Module):
             else:
                 self.task_embedding = TaskEmbedding(
                     task_embedding_dim=task_embedding_dim,
+                    normalize=task_embedding_normalize,
                 )
                 self.task_emb_output_dim = self.task_embedding.output_dim  # = 5 * dim
         else:
@@ -141,15 +154,22 @@ class TaskLevelEncoder(nn.Module):
             cond_dim=cond_dim,
         )
         
-        # 4. 预测头 (96 + 10 = 106 -> 3, 或 96 -> 3 当不使用任务嵌入时)
-        head_input_dim = segment_d_model + self.task_emb_output_dim
-        head_output_dim = num_classes if self.head_type == "classification" else (num_classes - 1)
-        self.prediction_head = PredictionHead(
-            input_dim=head_input_dim,
-            hidden_dim=head_input_dim // 2,  # 53
-            output_dim=head_output_dim,
-            dropout=dropout,
-        )
+        # 4. 预测头
+        if self.use_conditional_cutpoints:
+            # 条件化 cutpoints：骨干输出标量分数 z，任务条件输出阈值 θ
+            self.score_head = nn.Linear(segment_d_model, 1)
+            self.cutpoint_net = nn.Linear(self.task_emb_output_dim, num_classes - 1)
+            self.prediction_head = None
+        else:
+            # (96 + 10 = 106 -> 3, 或 96 -> 3 当不使用任务嵌入时)
+            head_input_dim = segment_d_model + self.task_emb_output_dim
+            head_output_dim = num_classes if self.head_type == "classification" else (num_classes - 1)
+            self.prediction_head = PredictionHead(
+                input_dim=head_input_dim,
+                hidden_dim=head_input_dim // 2,  # 53
+                output_dim=head_output_dim,
+                dropout=dropout,
+            )
         
         self._init_weights()
 
@@ -219,13 +239,20 @@ class TaskLevelEncoder(nn.Module):
         else:
             task_repr, _ = self.segment_aggregator(segment_reprs, segment_mask)
 
-        # 4. 拼接任务嵌入 -> (B, 96+emb_dim) 或 (B, 96)
-        if task_emb is not None:
-            fused = torch.cat([task_repr, task_emb], dim=-1)
+        # 4. 预测 -> (B, C) 或 (B, C-1)
+        if self.use_conditional_cutpoints:
+            # 条件化 cutpoints：z 只依赖眼动，θ 只依赖任务条件
+            z = self.score_head(task_repr)                      # (B, 1) 场景无关分数
+            theta = self.cutpoint_net(task_emb)                 # (B, K-1)
+            theta0 = theta[:, 0:1]
+            theta1 = theta0 + F.softplus(theta[:, 1:2])
+            theta = torch.cat([theta0, theta1], dim=1)          # 保证 θ0 < θ1
+            logits = z - theta                                  # (B, K-1)
         else:
-            fused = task_repr
-
-        # 5. 预测 -> (B, C) 或 (B, C-1)
-        logits = self.prediction_head(fused)
+            if task_emb is not None:
+                fused = torch.cat([task_repr, task_emb], dim=-1)
+            else:
+                fused = task_repr
+            logits = self.prediction_head(fused)
         
         return logits

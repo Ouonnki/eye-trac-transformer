@@ -363,6 +363,9 @@ def train_one_fold(
         dropout=mcfg['dropout'],
         num_classes=mcfg['num_classes'],
         head_type=mcfg.get('head_type', 'classification'),
+        use_output_norm=mcfg.get('use_output_norm', False),
+        task_embedding_normalize=mcfg.get('task_embedding_normalize', False),
+        use_conditional_cutpoints=mcfg.get('use_conditional_cutpoints', False),
     ).to(device)
 
     # ---- Trainer ----

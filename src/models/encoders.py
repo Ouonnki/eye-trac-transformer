@@ -217,6 +217,7 @@ class GazeRnnEncoder(nn.Module):
         dropout: float,
         bidirectional: bool,
         output_dim: int,
+        use_output_norm: bool = False,
     ):
         super().__init__()
         if hidden_size <= 0:
@@ -261,11 +262,14 @@ class GazeRnnEncoder(nn.Module):
         self.bidirectional = bidirectional
         self.num_directions = 2 if bidirectional else 1
 
+        self.use_output_norm = use_output_norm
         in_dim = hidden_size * self.num_directions
         if in_dim != output_dim:
             self.proj = nn.Linear(in_dim, output_dim)
         else:
             self.proj = nn.Identity()
+        if self.use_output_norm:
+            self.out_norm = nn.LayerNorm(output_dim)
 
     def forward(
         self,
@@ -294,6 +298,8 @@ class GazeRnnEncoder(nn.Module):
             reprs = last[0]
 
         output = self.proj(reprs)
+        if self.use_output_norm:
+            output = self.out_norm(output)
         return output, None
 
 

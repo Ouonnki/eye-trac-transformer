@@ -674,6 +674,9 @@ def main():
         dropout=config['model']['dropout'],
         num_classes=config['model']['num_classes'],
         head_type=head_type,
+        use_output_norm=config['model'].get('use_output_norm', False),
+        task_embedding_normalize=config['model'].get('task_embedding_normalize', False),
+        use_conditional_cutpoints=config['model'].get('use_conditional_cutpoints', False),
     ).to(device)
     
     # 统计参数量

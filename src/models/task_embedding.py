@@ -7,6 +7,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
@@ -89,16 +90,20 @@ class TaskEmbedding(nn.Module):
     def __init__(
         self,
         task_embedding_dim: int = 2,
+        normalize: bool = False,
     ):
         """
         初始化
 
         Args:
             task_embedding_dim: 所有条件统一的嵌入维度
+            normalize: 是否在输出末尾做 LayerNorm，用于对齐主干表示的量纲，
+                       避免任务嵌入因幅度塌缩被拼接后淹没
         """
         super().__init__()
 
         self.task_embedding_dim = task_embedding_dim
+        self.normalize = normalize
         # 输出维度 = 5 * task_embedding_dim（1个连续 + 4个离散）
         self.output_dim = task_embedding_dim * 5
 
@@ -162,6 +167,9 @@ class TaskEmbedding(nn.Module):
 
         # 拼接所有嵌入：连续(task_embedding_dim) + 离散(4*task_embedding_dim) = 5*task_embedding_dim
         task_emb = torch.cat([grid_emb] + discrete_embs, dim=1)
+
+        if self.normalize:
+            task_emb = F.layer_norm(task_emb, task_emb.shape[-1:])
 
         return task_emb
 
