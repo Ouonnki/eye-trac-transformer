@@ -1,0 +1,82 @@
+{
+  "data": {
+    "processed_data_path": "data/processed/processed_data_subject_norm.pkl"
+  },
+  "experiment": {
+    "n_repeats": 1,
+    "name": "FULL_GRU",
+    "output_dir": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260817_201225_524269/full_gru",
+    "random_seed": 42,
+    "train_subjects": 100,
+    "train_tasks": 20
+  },
+  "model": {
+    "attention_dim": 16,
+    "dropout": 0.0,
+    "head_type": "ordinal",
+    "num_classes": 3,
+    "segment_d_model": 32,
+    "segment_encoder_type": "gru",
+    "segment_nhead": 2,
+    "segment_num_layers": 1,
+    "segment_rnn_dropout": 0.0,
+    "segment_rnn_hidden_size": 32,
+    "segment_rnn_layers": 1,
+    "task_embedding_dim": 2,
+    "use_gradient_checkpointing": false,
+    "use_task_embedding": true
+  },
+  "sequence": {
+    "input_dim": 7,
+    "max_segments": 25,
+    "max_seq_len": 300,
+    "screen_height": 1080,
+    "screen_width": 1920
+  },
+  "split": {
+    "manifest_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260817_201225_524269/shared_split_manifest.json",
+    "mode": "fixed_sample_holdout"
+  },
+  "training": {
+    "balanced_sampler_beta": 0.999,
+    "balanced_sampler_mode": "effective_num",
+    "batch_size": 16,
+    "class_weights": [
+      2.2,
+      0.4484,
+      1.9
+    ],
+    "class_weights_mode": "manual",
+    "early_stop_metric": "f1_macro",
+    "epochs": 100,
+    "focal_loss_alpha": [
+      0.25,
+      0.25,
+      0.25
+    ],
+    "focal_loss_gamma": 2.0,
+    "grad_clip": 1.0,
+    "label_smoothing": 0.0,
+    "lr": 0.0003,
+    "num_workers": 0,
+    "ordinal_pos_weight": [
+      0.5,
+      1.1
+    ],
+    "ordinal_pos_weight_clip": [
+      0.5,
+      2.5
+    ],
+    "ordinal_pos_weight_mode": "manual",
+    "ordinal_thresholds": [
+      0.47,
+      0.5
+    ],
+    "patience": 20,
+    "train_val_split": 0.9,
+    "use_balanced_sampler": true,
+    "use_class_weights": false,
+    "use_focal_loss": false,
+    "weight_decay": 0.0
+  }
+}

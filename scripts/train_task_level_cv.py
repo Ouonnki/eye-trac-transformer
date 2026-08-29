@@ -8,16 +8,19 @@
    - test1 = 后57被试 × 前20题（新被试+旧题）
    - test2 = 前100被试 × 后10题（旧被试+新题）
    - test3 = 后57被试 × 后10题（新被试+新题）
-2. 样本级十折（StratifiedKFold, shuffle=True, 固定 seed）：
-   - 在 train_pool (2000 样本) 上分 10 折，每折 val = 200 样本（10%），train = 1800 样本
-   - 10 折轮转后每个训练样本恰好当过一次 val（覆盖全部 2000 样本）
+2. 十折支持两种模式：
+   - sample：StratifiedKFold，随机留出 200 个 subject-task 样本
+   - subject：随机打乱前 100 名被试，每折完整留出 10 人（200 样本）
+   - 两种模式均为每折 train=1800、val=200，并覆盖全部 2000 个训练池样本
 
 训练/评估与 train_task_level 完全一致（TaskLevelEncoder + TaskLevelTrainer，
-早停 val_f1_macro，评估 loss/acc/f1_weighted/f1_macro/spearman）。
+早停 val_f1_macro，评估 loss/ACC/Macro-F1/G-Mean/AUC-PR/QWK，并保留
+f1_weighted/spearman）。
 
 用法：
     python scripts/train_task_level_cv.py --config configs/task_level_ordinal_manual11_bilstm.json
     python scripts/train_task_level_cv.py --folds 10 --fold-by sample --output-dir outputs/task_level_cv
+    python scripts/train_task_level_cv.py --config configs/task_level_classification_manual11_bilstm.json --fold-by subject
 
 输出：
     <output_dir>/<exp_name>_cv<folds>fold_<timestamp>/
@@ -40,6 +43,8 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from scipy.stats import spearmanr
+from sklearn.metrics import recall_score, average_precision_score, cohen_kappa_score
+from sklearn.preprocessing import label_binarize
 
 # 添加项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +67,7 @@ from scripts.train_task_level import (
     compute_ordinal_pos_weight,
     plot_training_curves,
     split_2x2,
+    dataset_fingerprint,
     Subset,
 )
 
@@ -78,10 +84,19 @@ def parse_args():
     parser.add_argument("--data", type=str, default=None,
                         help="覆盖 config 的 processed 数据路径")
     parser.add_argument("--folds", type=int, default=10, help="交叉验证折数")
-    parser.add_argument("--fold-by", choices=["sample"], default="sample",
-                        help="分折单位（当前仅样本级 StratifiedKFold）")
+    parser.add_argument(
+        "--fold-by",
+        choices=["sample", "subject"],
+        default="sample",
+        help=(
+            "sample=样本级 StratifiedKFold；subject=随机完整留出被试，"
+            "10折时每折10人/200样本"
+        ),
+    )
     parser.add_argument("--output-dir", type=str, default=None,
                         help="覆盖 config 的 experiment.output_dir")
+    parser.add_argument("--resume-dir", type=str, default=None,
+                        help="指定已有输出目录直接续跑（跳过已完成的 fold）")
     parser.add_argument("--seed", type=int, default=None,
                         help="覆盖随机种子（默认用 config 的 random_seed，全折固定）")
     return parser.parse_args()
@@ -102,10 +117,84 @@ def build_2x2_pool(dataset, train_subjects=100, train_tasks=20, seed=42):
 
 
 def make_sample_folds(pool_indices, labels, n_folds, seed):
-    """样本级 StratifiedKFold。返回 [(train_idx, val_idx), ...]（均为 pool 内位置）。"""
+    """样本级 StratifiedKFold；返回的索引均为 pool 内位置。"""
     from sklearn.model_selection import StratifiedKFold
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
     return list(skf.split(pool_indices, labels))
+
+
+def make_subject_folds(pool_indices, dataset, n_folds, seed):
+    """按被试随机分折；每名被试的全部任务只出现在一个 Val fold。"""
+    subjects = tuple(
+        sorted({dataset.samples[index]['subject_id'] for index in pool_indices})
+    )
+    if len(subjects) % n_folds != 0:
+        raise ValueError(
+            f'被试数 {len(subjects)} 不能均分为 {n_folds} 折'
+        )
+    permutation = np.random.RandomState(seed).permutation(subjects)
+    subject_groups = np.split(permutation, n_folds)
+    folds = []
+    for group in subject_groups:
+        val_subjects = {str(subject_id) for subject_id in group.tolist()}
+        val_positions = np.asarray(
+            [
+                position
+                for position, index in enumerate(pool_indices)
+                if dataset.samples[index]['subject_id'] in val_subjects
+            ],
+            dtype=int,
+        )
+        train_positions = np.asarray(
+            [
+                position
+                for position, index in enumerate(pool_indices)
+                if dataset.samples[index]['subject_id'] not in val_subjects
+            ],
+            dtype=int,
+        )
+        folds.append((train_positions, val_positions))
+    return folds
+
+
+def write_fold_manifest(path, dataset, train_pool, folds, fold_by, seed):
+    """保存每折 subject/sample 成员，确保实验可复算。"""
+    payload = {
+        'schema_version': 1,
+        'fold_by': fold_by,
+        'seed': seed,
+        'dataset_fingerprint': dataset_fingerprint(dataset),
+        'folds': [],
+    }
+    for fold_number, (train_positions, val_positions) in enumerate(folds, start=1):
+        train_indices = [train_pool[int(position)] for position in train_positions]
+        val_indices = [train_pool[int(position)] for position in val_positions]
+        payload['folds'].append(
+            {
+                'fold': fold_number,
+                'train_subject_ids': sorted(
+                    {dataset.samples[index]['subject_id'] for index in train_indices}
+                ),
+                'val_subject_ids': sorted(
+                    {dataset.samples[index]['subject_id'] for index in val_indices}
+                ),
+                'train': [
+                    {
+                        'subject_id': dataset.samples[index]['subject_id'],
+                        'task_id': int(dataset.samples[index]['task_id']),
+                    }
+                    for index in train_indices
+                ],
+                'val': [
+                    {
+                        'subject_id': dataset.samples[index]['subject_id'],
+                        'task_id': int(dataset.samples[index]['task_id']),
+                    }
+                    for index in val_indices
+                ],
+            }
+        )
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + '\n')
 
 
 def build_loader(dataset, indices, batch_size, num_workers, shuffle=False, sampler=None):
@@ -146,14 +235,52 @@ def get_ordinal_pos_weight(config):
     raise ValueError(f"不支持的 ordinal_pos_weight_mode: {mode}")
 
 
+def compute_gmean(labels, predictions):
+    """多分类 G-Mean：各类别 recall 的几何均值。"""
+    labels = np.asarray(labels, dtype=int)
+    predictions = np.asarray(predictions, dtype=int)
+    classes = np.unique(labels)
+    recalls = recall_score(
+        labels, predictions, labels=classes, average=None, zero_division=0
+    )
+    if recalls.size == 0 or np.any(recalls <= 0):
+        return 0.0
+    return float(np.exp(np.mean(np.log(recalls))))
+
+
+def safe_auc_pr(labels, probabilities):
+    """多分类 AUC-PR：One-vs-Rest macro average precision。"""
+    labels = np.asarray(labels, dtype=int)
+    probabilities = np.asarray(probabilities, dtype=float)
+    num_classes = probabilities.shape[1]
+    y_true_bin = label_binarize(labels, classes=list(range(num_classes)))
+    if y_true_bin.ndim == 1:
+        y_true_bin = y_true_bin.reshape(-1, 1)
+    try:
+        value = average_precision_score(y_true_bin, probabilities, average='macro')
+    except ValueError:
+        value = 0.0
+    if value is None or np.isnan(value):
+        return 0.0
+    return float(value)
+
+
 def evaluate_sets(trainer, eval_sets):
-    """对 [('name', loader), ...] 逐集评估，附加 spearman。返回 {name: metrics}。"""
+    """逐集评估，补充 Spearman、G-Mean、AUC-PR、QWK。"""
     results = {}
     for name, loader in eval_sets:
         metrics = trainer.evaluate(loader, desc=name)
-        spearman_corr, spearman_p = spearmanr(metrics['labels'], metrics['predictions'])
+        labels = np.asarray(metrics['labels'], dtype=int)
+        predictions = np.asarray(metrics['predictions'], dtype=int)
+        probabilities = np.asarray(metrics['probabilities'], dtype=float)
+        spearman_corr, spearman_p = spearmanr(labels, predictions)
         metrics['spearman'] = float(spearman_corr)
         metrics['spearman_p'] = float(spearman_p)
+        metrics['g_mean'] = compute_gmean(labels, predictions)
+        metrics['auc_pr'] = safe_auc_pr(labels, probabilities)
+        metrics['qwk'] = float(
+            cohen_kappa_score(labels, predictions, weights='quadratic')
+        )
         results[name] = metrics
     return results
 
@@ -299,7 +426,7 @@ def train_one_fold(
                       f"(Best Val {early_stop_metric}: {best_val_metric:.4f})")
                 break
 
-    best_epoch = np.argmax(history[f'val_{early_stop_metric}']) + 1 if history[f'val_{early_stop_metric}'] else 0
+    best_epoch = int(np.argmax(history[f'val_{early_stop_metric}']) + 1) if history[f'val_{early_stop_metric}'] else 0
     trainer.save_checkpoint(fold_dir / 'final_model.pt', epoch, best_val_metric)
 
     # ---- 评估 best 模型 ----
@@ -320,6 +447,9 @@ def train_one_fold(
             'accuracy': metrics['accuracy'],
             'f1_weighted': metrics['f1_weighted'],
             'f1_macro': metrics['f1_macro'],
+            'g_mean': metrics['g_mean'],
+            'auc_pr': metrics['auc_pr'],
+            'qwk': metrics['qwk'],
             'spearman': metrics['spearman'],
             'spearman_p': metrics['spearman_p'],
             'predictions': [int(p) for p in metrics['predictions']],
@@ -334,14 +464,16 @@ def train_one_fold(
 
     plot_training_curves(history, fold_dir / 'training_curves.png', best_epoch, early_stop_metric)
 
-    # 精简指标（不含 predictions/labels，避免 summary 过大）
-    fold_summary = {'fold': fold_k, 'best_epoch': best_epoch,
+    # 精简指标（不含 predictions/labels，避免 summary 过大）—— 全部转 Python 原生类型
+    fold_summary = {'fold': int(fold_k), 'best_epoch': best_epoch,
                     f'best_val_{early_stop_metric}': float(best_val_metric)}
     for name, metrics in eval_results.items():
         fold_summary[name] = {
-            'loss': metrics['loss'], 'accuracy': metrics['accuracy'],
-            'f1_weighted': metrics['f1_weighted'], 'f1_macro': metrics['f1_macro'],
-            'spearman': metrics['spearman'], 'spearman_p': metrics['spearman_p'],
+            'loss': float(metrics['loss']), 'accuracy': float(metrics['accuracy']),
+            'f1_weighted': float(metrics['f1_weighted']), 'f1_macro': float(metrics['f1_macro']),
+            'g_mean': float(metrics['g_mean']), 'auc_pr': float(metrics['auc_pr']),
+            'qwk': float(metrics['qwk']), 'spearman': float(metrics['spearman']),
+            'spearman_p': float(metrics['spearman_p']),
         }
     return fold_summary
 
@@ -352,13 +484,34 @@ def aggregate(fold_summaries, split_names, metric_names):
     for split in split_names:
         summary[split] = {}
         for metric in metric_names:
-            values = [f[split][metric] for f in fold_summaries]
+            values = [float(f[split][metric]) for f in fold_summaries]
             summary[split][metric] = {
                 'values': values,
                 'mean': float(np.mean(values)),
                 'std': float(np.std(values)),
             }
     return summary
+
+
+def resume_fold_summary(fold_dir, early_stop_metric):
+    """从已有 fold 输出重建 fold_summary（用于断点续跑）。"""
+    with open(fold_dir / 'test_results.json') as f:
+        tr = json.load(f)
+    with open(fold_dir / 'history.json') as f:
+        hist = json.load(f)
+    key = f'val_{early_stop_metric}'
+    if key in hist and hist[key]:
+        best_metric = float(max(hist[key]))
+        best_epoch = int(np.argmax(hist[key]) + 1)
+    else:
+        best_metric, best_epoch = 0.0, 0
+    fs = {'fold': int(fold_dir.name.split('_')[1]), 'best_epoch': best_epoch,
+          f'best_val_{early_stop_metric}': best_metric}
+    for name, m in tr.items():
+        fs[name] = {k2: float(m[k2]) for k2 in
+                    ('loss', 'accuracy', 'f1_weighted', 'f1_macro', 'g_mean',
+                     'auc_pr', 'qwk', 'spearman', 'spearman_p')}
+    return fs
 
 
 def main():
@@ -401,22 +554,61 @@ def main():
     logger.info(f"test1: {len(test1)} | test2: {len(test2)} | test3: {len(test3)}")
 
     # ---- 十折 ----
-    folds = make_sample_folds(train_pool, pool_labels, n_folds, seed)
-    sizes = [len(v) for _, v in folds]
+    if args.fold_by == 'subject':
+        folds = make_subject_folds(train_pool, dataset, n_folds, seed)
+    else:
+        folds = make_sample_folds(train_pool, pool_labels, n_folds, seed)
+    sizes = [len(val_positions) for _, val_positions in folds]
     assert all(s == len(train_pool) // n_folds for s in sizes), f"折大小不均: {sizes}"
-    logger.info(f"每折 val 大小: {sizes} (覆盖全部训练样本: {sum(sizes) == len(train_pool)})")
+    logger.info(
+        f"每折 val 大小: {sizes} "
+        f"(fold_by={args.fold_by}, 覆盖全部训练样本: {sum(sizes) == len(train_pool)})"
+    )
+    if args.fold_by == 'subject':
+        subject_counts = [
+            len(
+                {
+                    dataset.samples[train_pool[int(position)]]['subject_id']
+                    for position in val_positions
+                }
+            )
+            for _, val_positions in folds
+        ]
+        assert all(count == 10 for count in subject_counts), subject_counts
+        logger.info(f"每折完整 Val 被试数: {subject_counts}")
 
     # ---- 输出目录 ----
-    base_out = args.output_dir or config['experiment']['output_dir']
-    exp_name = config['experiment'].get('name', 'exp')
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_root = Path(base_out) / f"{exp_name}_cv{n_folds}fold_{timestamp}"
-    out_root.mkdir(parents=True, exist_ok=True)
+    if args.resume_dir:
+        out_root = Path(args.resume_dir)
+        out_root.mkdir(parents=True, exist_ok=True)
+        logger.info(f"续跑模式，输出目录: {out_root}")
+    else:
+        base_out = args.output_dir or config['experiment']['output_dir']
+        exp_name = config['experiment'].get('name', 'exp')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        out_root = Path(base_out) / f"{exp_name}_{args.fold_by}_cv{n_folds}fold_{timestamp}"
+        out_root.mkdir(parents=True, exist_ok=True)
 
-    # ---- 逐折训练 ----
+    write_fold_manifest(
+        out_root / 'split_manifest.json',
+        dataset,
+        train_pool,
+        folds,
+        args.fold_by,
+        seed,
+    )
+
+    # ---- 逐折训练（已有输出的折自动跳过，用于断点续跑） ----
     fold_summaries = []
     for k, (tr_pos, va_pos) in enumerate(folds, start=1):
         fold_dir = out_root / f"fold_{k:02d}"
+        if (fold_dir / 'test_results.json').exists():
+            print(f"fold_{k:02d} 已存在，跳过（resume）")
+            fs = resume_fold_summary(fold_dir, config['training'].get('early_stop_metric', 'f1_weighted'))
+            with open(fold_dir / 'fold_summary.json', 'w') as f:
+                json.dump(fs, f, indent=2, ensure_ascii=False)
+            fold_summaries.append(fs)
+            continue
         fold_dir.mkdir(parents=True, exist_ok=True)
         train_idx = [train_pool[i] for i in tr_pos]
         val_idx = [train_pool[i] for i in va_pos]
@@ -432,7 +624,10 @@ def main():
 
     # ---- 汇总 ----
     split_names = ["Val (同分布)", "Test1 (新被试+旧题)", "Test2 (旧被试+新题)", "Test3 (新被试+新题)"]
-    metric_names = ['loss', 'accuracy', 'f1_weighted', 'f1_macro', 'spearman']
+    metric_names = [
+        'loss', 'accuracy', 'f1_weighted', 'f1_macro',
+        'g_mean', 'auc_pr', 'qwk', 'spearman',
+    ]
     cv_summary = {
         'n_folds': n_folds,
         'fold_by': args.fold_by,
@@ -447,20 +642,45 @@ def main():
     with open(out_root / 'config.json', 'w') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
+    # ---- 保存论文表格指标 ----
+    table_lines = [
+        '# Task-level 10-fold CV metrics',
+        '',
+        '| Split | ACC | Macro-F1 | G-Mean | AUC-PR | QWK |',
+        '|---|---:|---:|---:|---:|---:|',
+    ]
+    for split in split_names:
+        s = cv_summary['summary'][split]
+        cells = [
+            f"{s[metric]['mean']:.4f} ± {s[metric]['std']:.4f}"
+            for metric in ('accuracy', 'f1_macro', 'g_mean', 'auc_pr', 'qwk')
+        ]
+        table_lines.append(f"| {split} | " + ' | '.join(cells) + ' |')
+    table_lines.extend([
+        '',
+        'Definitions: G-Mean = geometric mean of per-class recall; '
+        'AUC-PR = macro one-vs-rest average precision; '
+        'QWK = quadratic weighted Cohen kappa.',
+    ])
+    (out_root / 'cv_metrics_table.md').write_text(
+        '\n'.join(table_lines) + '\n', encoding='utf-8'
+    )
+
     # ---- 打印汇总表 ----
     print("\n" + "=" * 95)
     print("十折交叉验证结果汇总 (mean ± std)")
     print("=" * 95)
-    header = f"{'数据集':<25} {'Acc':<14} {'F1(Weighted)':<16} {'F1(Macro)':<16} {'Spearman':<14}"
+    header = f"{'数据集':<25} {'ACC':<14} {'Macro-F1':<14} {'G-Mean':<14} {'AUC-PR':<14} {'QWK':<14}"
     print(header)
-    print("-" * 95)
+    print("-" * 110)
     for split in split_names:
         s = cv_summary['summary'][split]
         print(f"{split:<25} "
               f"{s['accuracy']['mean']:.4f}±{s['accuracy']['std']:.4f}   "
-              f"{s['f1_weighted']['mean']:.4f}±{s['f1_weighted']['std']:.4f}   "
               f"{s['f1_macro']['mean']:.4f}±{s['f1_macro']['std']:.4f}   "
-              f"{s['spearman']['mean']:.4f}±{s['spearman']['std']:.4f}")
+              f"{s['g_mean']['mean']:.4f}±{s['g_mean']['std']:.4f}   "
+              f"{s['auc_pr']['mean']:.4f}±{s['auc_pr']['std']:.4f}   "
+              f"{s['qwk']['mean']:.4f}±{s['qwk']['std']:.4f}")
     print("=" * 95)
     logger.info(f"完成! 结果保存在: {out_root}")
 

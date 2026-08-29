@@ -12,6 +12,7 @@ import numpy as np
 
 from paper_experiment_rerun.experiment_plan import (
     ConfigGenerationOptions,
+    ExperimentPlanError,
     RUN_SPECS,
     build_shared_split_manifest,
     build_shared_split_manifest_from_data,
@@ -136,6 +137,45 @@ class PaperExperimentPlanTests(unittest.TestCase):
         self.assertEqual(len(manifest.dataset_fingerprint), 64)
         json.dumps(manifest.to_json(), sort_keys=True)
 
+    def test_subject_manifest_holds_out_ten_complete_subjects(self) -> None:
+        dataset = make_dataset()
+
+        manifest = build_shared_split_manifest(dataset, val_split_unit="subject")
+        reversed_manifest = build_shared_split_manifest(
+            FakeDataset(tuple(reversed(dataset.samples))),
+            val_split_unit="subject",
+        )
+
+        self.assertEqual(manifest, reversed_manifest)
+        self.assertEqual(manifest.val_split_unit, "subject")
+        self.assertEqual(len(manifest.train), 1800)
+        self.assertEqual(len(manifest.val), 200)
+        train_subjects = {sample.subject_id for sample in manifest.train}
+        val_subjects = {sample.subject_id for sample in manifest.val}
+        self.assertEqual(len(train_subjects), 90)
+        self.assertEqual(len(val_subjects), 10)
+        self.assertFalse(train_subjects & val_subjects)
+        self.assertTrue(
+            all(
+                {sample.task_id for sample in manifest.val if sample.subject_id == subject}
+                == set(range(1, 21))
+                for subject in val_subjects
+            )
+        )
+        expected_subjects = tuple(f"S{subject:03d}" for subject in range(1, 101))
+        expected_val_subjects = set(
+            np.random.RandomState(42).permutation(expected_subjects)[:10]
+        )
+        self.assertEqual(val_subjects, expected_val_subjects)
+        self.assertEqual(manifest.to_json()["val_split_unit"], "subject")
+
+    def test_manifest_rejects_unknown_validation_split_unit(self) -> None:
+        with self.assertRaises(ExperimentPlanError):
+            build_shared_split_manifest(
+                make_dataset(),
+                val_split_unit="task",  # type: ignore[arg-type]
+            )
+
     def test_manifest_writer_emits_serializable_fixed_holdout_data(self) -> None:
         manifest = build_shared_split_manifest(make_dataset())
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -146,6 +186,7 @@ class PaperExperimentPlanTests(unittest.TestCase):
             payload = json.loads(written_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["seed"], 42)
             self.assertEqual(payload["dataset_fingerprint"], manifest.dataset_fingerprint)
+            self.assertEqual(payload["val_split_unit"], "sample")
             self.assertEqual(len(payload["train"]), 1800)
             self.assertEqual(len(payload["val"]), 200)
             self.assertEqual(len(payload["test1"]), 200)
