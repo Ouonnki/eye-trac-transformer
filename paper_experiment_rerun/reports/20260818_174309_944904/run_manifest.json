@@ -1,0 +1,168 @@
+{
+  "batch_id": "20260818_174309_944904",
+  "counts": {
+    "attempted": 14,
+    "failed": 0,
+    "not_run": 0,
+    "planned": 14,
+    "succeeded": 14
+  },
+  "mode": "run",
+  "runs": [
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/base_transformer.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/base_transformer.log",
+      "ordinal": 1,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_transformer/BASE_TRANSFORMER_20260818_174312",
+      "reason": null,
+      "run_id": "BASE_TRANSFORMER",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_transformer/BASE_TRANSFORMER_20260818_174312/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/base_cnn1d.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/base_cnn1d.log",
+      "ordinal": 2,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_cnn1d/BASE_CNN1D_20260818_174530",
+      "reason": null,
+      "run_id": "BASE_CNN1D",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_cnn1d/BASE_CNN1D_20260818_174530/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/base_rnn.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/base_rnn.log",
+      "ordinal": 3,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_rnn/BASE_RNN_20260818_174816",
+      "reason": null,
+      "run_id": "BASE_RNN",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_rnn/BASE_RNN_20260818_174816/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/base_lstm.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/base_lstm.log",
+      "ordinal": 4,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_lstm/BASE_LSTM_20260818_175454",
+      "reason": null,
+      "run_id": "BASE_LSTM",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_lstm/BASE_LSTM_20260818_175454/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/base_gru.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/base_gru.log",
+      "ordinal": 5,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_gru/BASE_GRU_20260818_180131",
+      "reason": null,
+      "run_id": "BASE_GRU",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_gru/BASE_GRU_20260818_180131/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/base_bilstm.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/base_bilstm.log",
+      "ordinal": 6,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_bilstm/BASE_BILSTM_20260818_181557",
+      "reason": null,
+      "run_id": "BASE_BILSTM",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/base_bilstm/BASE_BILSTM_20260818_181557/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/full_transformer.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/full_transformer.log",
+      "ordinal": 7,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_transformer/FULL_TRANSFORMER_20260818_182259",
+      "reason": null,
+      "run_id": "FULL_TRANSFORMER",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_transformer/FULL_TRANSFORMER_20260818_182259/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/full_cnn1d.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/full_cnn1d.log",
+      "ordinal": 8,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_cnn1d/FULL_CNN1D_20260818_182915",
+      "reason": null,
+      "run_id": "FULL_CNN1D",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_cnn1d/FULL_CNN1D_20260818_182915/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/full_rnn.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/full_rnn.log",
+      "ordinal": 9,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_rnn/FULL_RNN_20260818_183228",
+      "reason": null,
+      "run_id": "FULL_RNN",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_rnn/FULL_RNN_20260818_183228/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/full_lstm.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/full_lstm.log",
+      "ordinal": 10,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_lstm/FULL_LSTM_20260818_183734",
+      "reason": null,
+      "run_id": "FULL_LSTM",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_lstm/FULL_LSTM_20260818_183734/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/full_gru.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/full_gru.log",
+      "ordinal": 11,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_gru/FULL_GRU_20260818_185205",
+      "reason": null,
+      "run_id": "FULL_GRU",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_gru/FULL_GRU_20260818_185205/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/full_bilstm.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/full_bilstm.log",
+      "ordinal": 12,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_bilstm/FULL_BILSTM_20260818_190257",
+      "reason": null,
+      "run_id": "FULL_BILSTM",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/full_bilstm/FULL_BILSTM_20260818_190257/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/task_bilstm.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/task_bilstm.log",
+      "ordinal": 13,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/task_bilstm/TASK_BILSTM_20260818_191544",
+      "reason": null,
+      "run_id": "TASK_BILSTM",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/task_bilstm/TASK_BILSTM_20260818_191544/test_results.json"
+    },
+    {
+      "config_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/configs/20260818_174309_944904/ordinal_bilstm.json",
+      "exit_code": 0,
+      "log_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/logs/20260818_174309_944904/ordinal_bilstm.log",
+      "ordinal": 14,
+      "output_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/ordinal_bilstm/ORDINAL_BILSTM_20260818_193304",
+      "reason": null,
+      "run_id": "ORDINAL_BILSTM",
+      "status": "success",
+      "test_results_path": "/root/autodl-tmp/eye-trac-transformer/paper_experiment_rerun/runs/20260818_174309_944904/ordinal_bilstm/ORDINAL_BILSTM_20260818_193304/test_results.json"
+    }
+  ],
+  "schema_version": 1
+}
